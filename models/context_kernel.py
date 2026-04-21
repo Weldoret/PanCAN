@@ -1,0 +1,258 @@
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple, List, Dict, Any
+import numpy as np
+
+
+class FidelityCriterion(nn.Module):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, K: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
+        loss = -torch.trace(K @ S.t())
+        return loss
+
+
+class ContextCriterion(nn.Module):
+    def __init__(self, alpha: float = 0.5):
+        super().__init__()
+        self.alpha = alpha
+    
+    def forward(self, K: torch.Tensor, P: List[torch.Tensor]) -> torch.Tensor:
+        loss = 0.0
+        for P_c in P:
+            term = torch.trace(K @ P_c @ K.t() @ P_c.t())
+            loss -= self.alpha * term
+        
+        return loss
+
+
+class KernelRegularizer(nn.Module):
+    def __init__(self, beta: float = 1.0, norm_type: str = 'frobenius'):
+        super().__init__()
+        self.beta = beta
+        self.norm_type = norm_type
+    
+    def forward(self, K: torch.Tensor) -> torch.Tensor:
+        if self.norm_type == 'frobenius':
+            norm = torch.norm(K, p='fro')
+        elif self.norm_type == 'l2':
+            norm = torch.norm(K, p=2)
+        else:
+            raise ValueError(f"Unsupported norm type: {self.norm_type}")
+        
+        loss = 0.5 * self.beta * (norm ** 2)
+        return loss
+
+
+class ContextAwareKernel(nn.Module):
+    def __init__(self, 
+                 alpha: float = 0.5,
+                 beta: float = 1.0,
+                 num_directions: int = 4,
+                 max_iterations: int = 10,
+                 convergence_threshold: float = 1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = alpha / beta
+        self.num_directions = num_directions
+        self.max_iterations = max_iterations
+        self.convergence_threshold = convergence_threshold
+        
+        self.fidelity_criterion = FidelityCriterion()
+        self.context_criterion = ContextCriterion(alpha)
+        self.regularizer = KernelRegularizer(beta)
+    
+    def forward(self, 
+                S: torch.Tensor, 
+                P: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        self._validate_inputs(S, P)
+        
+        K = S.clone()
+        
+        for iteration in range(self.max_iterations):
+            K_prev = K.clone()
+            
+            context_term = torch.zeros_like(K)
+            for P_c in P:
+                context_term += P_c @ K @ P_c.t()
+            
+            K = S + self.gamma * context_term
+            
+            delta = torch.norm(K - K_prev, p='fro').item()
+            if delta < self.convergence_threshold:
+                break
+        
+        total_loss = self.compute_total_loss(K, S, P)
+        
+        info = {
+            'iterations': iteration + 1,
+            'converged': delta < self.convergence_threshold,
+            'final_delta': delta,
+            'total_loss': total_loss.item()
+        }
+        
+        return K, info
+    
+    def compute_total_loss(self, 
+                          K: torch.Tensor, 
+                          S: torch.Tensor, 
+                          P: List[torch.Tensor]) -> torch.Tensor:
+        """
+        Compute total loss
+        
+        Args:
+            K: Kernel matrix
+            S: Similarity matrix
+            P: List of adjacency matrices
+            
+        Returns:
+            Total loss value
+        """
+        fidelity_loss = self.fidelity_criterion(K, S)
+        context_loss = self.context_criterion(K, P)
+        regularizer_loss = self.regularizer(K)
+        
+        total_loss = fidelity_loss + context_loss + regularizer_loss
+        return total_loss
+    
+    def _validate_inputs(self, S: torch.Tensor, P: List[torch.Tensor]):
+        """Validate inputs"""
+        assert len(S.shape) == 2, "S must be a 2D matrix"
+        assert len(P) == self.num_directions, f"Expected {self.num_directions} adjacency matrices"
+        
+        for i, P_c in enumerate(P):
+            assert P_c.shape == S.shape, f"P[{i}] shape {P_c.shape} doesn't match S shape {S.shape}"
+
+
+class KernelMappingLayer(nn.Module):
+    """Kernel mapping layer"""
+    
+    def __init__(self, 
+                 input_dim: int,
+                 output_dim: int,
+                 kernel_type: str = 'gaussian',
+                 learnable: bool = True):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.kernel_type = kernel_type
+        self.learnable = learnable
+        
+        if kernel_type == 'linear':
+            self.W = nn.Parameter(torch.randn(input_dim, output_dim), requires_grad=learnable)
+        elif kernel_type == 'polynomial':
+            self.W = nn.Parameter(torch.randn(input_dim, output_dim), requires_grad=learnable)
+            self.c = nn.Parameter(torch.tensor(1.0), requires_grad=learnable)
+            self.d = nn.Parameter(torch.tensor(2.0), requires_grad=learnable)
+        elif kernel_type == 'gaussian':
+            self.sigma = nn.Parameter(torch.tensor(1.0), requires_grad=learnable)
+        else:
+            raise ValueError(f"Unsupported kernel type: {kernel_type}")
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.kernel_type == 'linear':
+            return x @ self.W
+        
+        elif self.kernel_type == 'polynomial':
+            linear_term = x @ self.W
+            return (self.c + linear_term) ** self.d
+        
+        elif self.kernel_type == 'gaussian':
+            return x
+        
+        else:
+            raise ValueError(f"Unsupported kernel type: {self.kernel_type}")
+    
+    def compute_kernel(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+        if self.kernel_type == 'linear':
+            phi1 = self.forward(x1)
+            phi2 = self.forward(x2)
+            return phi1 @ phi2.t()
+        
+        elif self.kernel_type == 'polynomial':
+            phi1 = self.forward(x1)
+            phi2 = self.forward(x2)
+            return (self.c + phi1 @ phi2.t()) ** self.d
+        
+        elif self.kernel_type == 'gaussian':
+            n1 = x1.size(0)
+            n2 = x2.size(0)
+            
+            x1_norm = (x1 ** 2).sum(dim=1).view(n1, 1)
+            x2_norm = (x2 ** 2).sum(dim=1).view(1, n2)
+            dist_sq = x1_norm + x2_norm - 2.0 * x1 @ x2.t()
+            
+            return torch.exp(-dist_sq / (2.0 * self.sigma ** 2))
+        
+        else:
+            raise ValueError(f"Unsupported kernel type: {self.kernel_type}")
+
+
+class ContextAwareKernelMap(nn.Module):
+    """Context-aware kernel mapping network"""
+    
+    def __init__(self,
+                 feature_dim: int,
+                 kernel_dim: int,
+                 alpha: float = 0.5,
+                 beta: float = 1.0,
+                 num_directions: int = 4,
+                 kernel_type: str = 'gaussian'):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.kernel_dim = kernel_dim
+        self.num_directions = num_directions
+        
+        self.kernel_mapping = KernelMappingLayer(
+            input_dim=feature_dim,
+            output_dim=kernel_dim,
+            kernel_type=kernel_type,
+            learnable=True
+        )
+        
+        self.context_kernel = ContextAwareKernel(
+            alpha=alpha,
+            beta=beta,
+            num_directions=num_directions
+        )
+    
+    def forward(self, 
+                features: torch.Tensor,
+                adjacency_matrices: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        batch_size, num_nodes, feature_dim = features.shape
+        
+        S = self._compute_similarity_matrix(features)
+        
+        K, info = self.context_kernel(S, adjacency_matrices)
+        
+        kernel_features = self.kernel_mapping(features.view(-1, feature_dim))
+        kernel_features = kernel_features.view(batch_size, num_nodes, self.kernel_dim)
+        
+        return K, kernel_features
+    
+    def _compute_similarity_matrix(self, features: torch.Tensor) -> torch.Tensor:
+        batch_size, num_nodes, feature_dim = features.shape
+        
+        sample_features = features[0]
+        
+        S = self.kernel_mapping.compute_kernel(sample_features, sample_features)
+        
+        return S
+    
+    def compute_image_kernel(self, 
+                           image1_features: torch.Tensor,
+                           image2_features: torch.Tensor,
+                           adjacency_matrices: List[torch.Tensor]) -> torch.Tensor:
+        S1 = self.kernel_mapping.compute_kernel(image1_features, image1_features)
+        S2 = self.kernel_mapping.compute_kernel(image2_features, image2_features)
+        
+        K1, _ = self.context_kernel(S1, adjacency_matrices)
+        K2, _ = self.context_kernel(S2, adjacency_matrices)
+        
+        kernel_value = torch.sum(K1 * K2.t())
+        
+        return kernel_value
