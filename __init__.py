@@ -1,48 +1,48 @@
 """
 Multi-Scale Context-Aware Deep Kernel Mapping Network for Multi-Label Classification
 
-基于多尺度特征融合的上下文感知深度核映射网络，用于多标签图像分类。
-该实现基于论文 "Multi-Scale Feature Fusion-based Context-Aware Deep Kernel Mapping Network for Multi-label Classification"。
+Context-aware deep kernel mapping network based on multi-scale feature fusion for multi-label image classification.
+This implementation is based on the paper "Multi-Scale Feature Fusion-based Context-Aware Deep Kernel Mapping Network for Multi-label Classification".
 """
 
-# 版本信息
+# Version information
 __version__ = "1.0.0"
 __author__ = "Your Name"
 __email__ = "your.email@example.com"
 
-# 导入核心模块
+# Import core modules
 from .config.base_config import NetworkConfig, DatasetConfig, TrainingConfig
 from .config.dataset_configs import NUSWIDEConfig, VOC2007Config, COCOConfig
 
-# 导入邻域系统模块
+# Import neighborhood system modules
 from .models.neighborhood import (
     NeighborhoodSystem,
     generate_adjacency_matrix,
     generate_adjacency_index_matrix
 )
 
-# 导入上下文感知核模块
+# Import context-aware kernel modules
 from .models.context_kernel import (
     ContextAwareKernel,
     ContextAwareKernelMap,
     KernelMappingLayer
 )
 
-# 导入多阶上下文模块
+# Import multi-order context modules
 from .models.multi_order import (
     MultiOrderNeighborhood,
     MultiOrderContextAggregator,
     MultiOrderContextLayer
 )
 
-# 导入随机游走注意力模块
+# Import random-walk attention modules
 from .models.random_walk import (
     RandomWalkAttention,
     RandomWalkContextAggregator,
     TransitionProbabilityCalculator
 )
 
-# 导入多尺度特征聚合模块
+# Import multi-scale feature aggregation modules
 from .models.multi_scale import (
     MultiScaleFeatureAggregator,
     SlidingWindowAggregator,
@@ -51,14 +51,14 @@ from .models.multi_scale import (
     CenteredSelfAttention
 )
 
-# 导入深度核映射模块
+# Import deep kernel mapping modules
 from .models.deep_kernel import (
     DeepKernelMappingNetwork,
     ContextAwareKernelLayer,
     KernelRecursiveMapping
 )
 
-# 导入网络架构模块
+# Import network architecture modules
 from .models.network import (
     MultiScaleContextAwareNetwork,
     MultiLabelClassifier,
@@ -66,7 +66,7 @@ from .models.network import (
     BackboneFactory
 )
 
-# 导入训练模块
+# Import training modules
 from .training.trainer import (
     TrainingManager,
     MultiLabelTrainer,
@@ -87,7 +87,7 @@ from .training.metrics import (
     compute_all_metrics
 )
 
-# 导入数据集模块
+# Import dataset modules
 from .datasets.nuswide import NUSWIDEDataset
 from .datasets.voc2007 import VOC2007Dataset
 from .datasets.coco import COCODataset
@@ -97,7 +97,7 @@ from .datasets.data_loader import (
     DataLoaderFactory
 )
 
-# 导入工具模块
+# Import utility modules
 from .utils.checkpoint import (
     save_checkpoint,
     load_checkpoint,
@@ -121,12 +121,12 @@ from .utils.logger import (
     log_config
 )
 
-# 导入脚本模块
+# Import script modules
 from .scripts.train import train_main
 from .scripts.test import test_main
 from .scripts.inference import inference_main
 
-# 预训练模型
+# Pretrained models
 from .models.pretrained import (
     load_resnet_backbone,
     load_tresnet_backbone,
@@ -134,17 +134,17 @@ from .models.pretrained import (
     BACKBONES
 )
 
-# 简化的API接口
+# Simplified API
 def create_network(config_path=None, **kwargs):
     """
-    创建多尺度上下文感知网络
+    Create a multi-scale context-aware network
     
     Args:
-        config_path (str, optional): 配置文件路径
-        **kwargs: 配置参数
+        config_path (str, optional): Path to the configuration file
+        **kwargs: Configuration parameters
     
     Returns:
-        MultiScaleContextAwareNetwork: 初始化的网络
+        MultiScaleContextAwareNetwork: Initialized network
     """
     from .config.base_config import NetworkConfig
     from .models.network import MultiScaleContextAwareNetwork
@@ -158,10 +158,10 @@ def create_network(config_path=None, **kwargs):
     else:
         config = NetworkConfig(**kwargs)
     
-    # 创建主干网络
+    # Create backbone network
     backbone = load_resnet_backbone(config.backbone_name)
     
-    # 创建网络
+    # Create network
     network = MultiScaleContextAwareNetwork(
         backbone=backbone,
         num_classes=config.num_classes,
@@ -172,14 +172,14 @@ def create_network(config_path=None, **kwargs):
 
 def create_dataset(dataset_name, config=None):
     """
-    创建数据集
+    Create a dataset
     
     Args:
-        dataset_name (str): 数据集名称 ('nuswide', 'voc2007', 'coco')
-        config: 配置对象
+        dataset_name (str): Dataset name ('nuswide', 'voc2007', 'coco')
+        config: Configuration object
     
     Returns:
-        Dataset: 数据集对象
+        Dataset: Dataset object
     """
     dataset_map = {
         'nuswide': NUSWIDEDataset,
@@ -195,63 +195,63 @@ def create_dataset(dataset_name, config=None):
 
 def create_trainer(model, config):
     """
-    创建训练管理器
+    Create a training manager
     
     Args:
-        model: 要训练的模型
-        config: 训练配置
+        model: Model to train
+        config: Training configuration
     
     Returns:
-        TrainingManager: 训练管理器
+        TrainingManager: Training manager
     """
     return TrainingManager(model=model, config=config)
 
-# 导出常用函数
+# Export commonly used functions
 __all__ = [
-    # 创建函数
+    # Creation functions
     'create_network',
     'create_dataset',
     'create_trainer',
     
-    # 配置类
+    # Configuration classes
     'NetworkConfig',
     'DatasetConfig',
     'TrainingConfig',
     
-    # 网络类
+    # Network classes
     'MultiScaleContextAwareNetwork',
     'MultiLabelClassifier',
     
-    # 核心模块
+    # Core modules
     'ContextAwareKernel',
     'MultiOrderContextAggregator',
     'RandomWalkAttention',
     'MultiScaleFeatureAggregator',
     'DeepKernelMappingNetwork',
     
-    # 数据集
+    # Datasets
     'NUSWIDEDataset',
     'VOC2007Dataset',
     'COCODataset',
     
-    # 训练
+    # Training
     'TrainingManager',
     'Evaluator',
     
-    # 评估指标
+    # Evaluation metrics
     'compute_mAP',
     'compute_CF1',
     'compute_OF1',
     'compute_all_metrics',
     
-    # 工具函数
+    # Utility functions
     'save_checkpoint',
     'load_checkpoint',
     'visualize_attention_maps',
     'setup_logger'
 ]
 
-# 设置默认日志记录器
+# Set up the default logger
 import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -264,11 +264,11 @@ if not logger.handlers:
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-# 初始化消息
+# Initialization messages
 logger.info(f"Multi-Scale Context-Aware Network v{__version__}")
 logger.info("Initialized with modules: config, models, training, datasets, utils")
 
-# 环境检查
+# Environment check
 try:
     import torch
     logger.info(f"PyTorch version: {torch.__version__}")

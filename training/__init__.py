@@ -100,19 +100,19 @@ def get_metrics_calculator():
     from .metrics import MultiLabelMetrics
     return MultiLabelMetrics()
 
-# 导出列表
+# Export list
 __all__ = [
-    # 训练
+    # Training
     'TrainingManager',
     'MultiLabelTrainer',
     'create_trainer',
     
-    # 评估
+    # Evaluation
     'Evaluator',
     'PerformanceMetrics',
     'create_evaluator',
     
-    # 指标
+    # Metrics
     'compute_mAP',
     'compute_CF1',
     'compute_OF1',
@@ -120,16 +120,16 @@ __all__ = [
     'MultiLabelMetrics',
     'get_metrics_calculator',
     
-    # 损失函数
+    # Loss functions
     'MultiLabelLoss',
     'AsymmetricLoss',
     'FocalLoss',
     
-    # 优化器
+    # Optimizers
     'create_optimizer',
     'create_scheduler',
     
-    # 工具
+    # Utilities
     'create_data_loaders',
     'EarlyStopping',
     'ModelCheckpoint'

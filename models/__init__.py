@@ -76,17 +76,17 @@ def create_model(config, num_classes=None, device=None):
     from .network import MultiScaleContextAwareNetwork
     from .pretrained import load_pretrained_backbone
     
-    # 设置默认值
+    # Set default values
     if num_classes is None:
         num_classes = config.network.num_classes
     
-    # 创建主干网络
+    # Create backbone network
     backbone = load_pretrained_backbone(
         config.network.backbone_name,
         pretrained=config.network.backbone_pretrained
     )
     
-    # 创建模型
+    # Create model
     model = MultiScaleContextAwareNetwork(
         backbone=backbone,
         num_classes=num_classes,
@@ -100,18 +100,18 @@ def create_model(config, num_classes=None, device=None):
 def create_custom_network(config, device=None):
     from .network import CustomNetwork
     
-    # 生成邻域矩阵
+    # Generate neighborhood matrices
     connect_idx, weights_flag = generate_adjacency_index_matrix(
         config.network.grid_rows,
         config.network.grid_cols
     )
     
-    # 转换到设备
+    # Move to device
     if device is not None:
         connect_idx = connect_idx.to(device)
         weights_flag = weights_flag.to(device)
     
-    # 创建网络
+    # Create network
     model = CustomNetwork(
         num_classes=config.network.num_classes,
         connect_idx=connect_idx,
@@ -123,7 +123,7 @@ def create_custom_network(config, device=None):
     return model
 
 
-# 导出列表
+# Export list
 __all__ = [
     'MultiScaleContextAwareNetwork',
     'CustomNetwork',
