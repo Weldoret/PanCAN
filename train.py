@@ -62,8 +62,8 @@ def parse_args():
                        help='Checkpoint path for resuming training (optional)')
     parser.add_argument('--eval_only', action='store_true',
                        help='Evaluation-only mode')
-    parser.add_argument('--use_features', action='store_true', default=True,
-                       help='Use pre-extracted features (default: True)')
+    parser.add_argument('--use_features', action='store_true',
+                       help='Load pre-extracted features instead of image tensors')
     parser.add_argument('--device', type=str, default=None,
                        choices=['cuda', 'cpu'],
                        help='Device (default: detected automatically)')
