@@ -4,6 +4,7 @@ from .checkpoint import CheckpointManager, load_checkpoint, load_model, save_che
 from .data import create_data_loaders
 from .experiment import setup_experiment
 from .logger import get_logger, log_config, log_metrics, setup_logger
+from .visualization import plot_metrics, save_visualization
 
 __all__ = [
     "CheckpointManager",
@@ -17,4 +18,6 @@ __all__ = [
     "get_logger",
     "log_metrics",
     "log_config",
+    "plot_metrics",
+    "save_visualization",
 ]
