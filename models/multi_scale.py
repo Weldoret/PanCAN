@@ -279,9 +279,18 @@ class MultiScaleFeatureAggregator(nn.Module):
         )
         
         self.scale_aggregators = nn.ModuleList()
+        base_grid = scales[0]
         for scale in scales:
+            stride = (base_grid[0] // scale[0], base_grid[1] // scale[1])
+            anchor_count = len(
+                AnchorBoxGenerator(
+                    grid_size=base_grid,
+                    anchor_sizes=anchor_sizes,
+                    strides=stride,
+                ).generate_anchor_boxes()
+            )
             aggregator = nn.Sequential(
-                nn.Linear(feature_dim * scale[0] * scale[1], feature_dim),
+                nn.Linear(feature_dim * anchor_count, feature_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout)
             )

@@ -237,7 +237,7 @@ class ContextAwareKernelMap(nn.Module):
         
         K, info = self.context_kernel(S, adjacency_matrices)
         
-        kernel_features = self.kernel_mapping(features.view(-1, feature_dim))
+        kernel_features = self.kernel_mapping(features.reshape(-1, feature_dim))
         kernel_features = self.feature_projection(kernel_features)
         kernel_features = kernel_features.view(batch_size, num_nodes, self.kernel_dim)
         

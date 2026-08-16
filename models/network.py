@@ -397,7 +397,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
         
         multi_scale_features = self.multi_scale_aggregator(
             random_walk_features,
-            (config.network.grid_rows, config.network.grid_cols)
+            (self.config.network.grid_rows, self.config.network.grid_cols)
         )
         
         deep_kernel_features = self.deep_kernel_network(

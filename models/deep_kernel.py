@@ -510,6 +510,16 @@ class DeepKernelMappingNetwork(nn.Module):
         Returns:
             Deep mapped features
         """
+        squeeze_node = phi_0.dim() == 2
+        if squeeze_node:
+            # ponytail: the current scale aggregator emits one image vector;
+            # represent it as one node until the per-scale representation is redesigned.
+            phi_0 = phi_0.unsqueeze(1)
+            identity = torch.eye(1, device=phi_0.device, dtype=phi_0.dtype)
+            adjacency_matrices = [identity] * len(adjacency_matrices)
+        elif phi_0.dim() != 3:
+            raise ValueError("phi_0 must have shape [batch, nodes, features]")
+
         phi_t = phi_0
         
         for layer in self.layers:
@@ -518,7 +528,7 @@ class DeepKernelMappingNetwork(nn.Module):
         if self.use_explicit_map:
             phi_t = self.explicit_map(phi_t, adjacency_matrices)
         
-        return phi_t
+        return phi_t[:, 0] if squeeze_node else phi_t
     
     def compute_image_kernel(self,
                            image1_cells: torch.Tensor,
