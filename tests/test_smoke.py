@@ -33,7 +33,7 @@ class EndToEndSmokeTest(unittest.TestCase):
             num_classes=3,
             max_order=1,
             attention_heads=1,
-            scales=[(2, 2)],
+            scales=[(2, 2), (1, 1)],
             anchor_sizes=[(1, 1)],
             kernel_feature_dims=[8],
             final_feature_dim=8,

@@ -243,7 +243,7 @@ class MultiHeadScaleAttention(nn.Module):
 
 
 class MultiScaleFeatureAggregator(nn.Module):
-    """Multi-scale feature aggregator"""
+    """Cascaded micro-to-macro feature aggregation from PanCAN Eqs. (11)-(18)."""
     
     def __init__(self,
                  feature_dim: int,
@@ -263,94 +263,147 @@ class MultiScaleFeatureAggregator(nn.Module):
         self.anchor_sizes = anchor_sizes
         self.top_k = top_k
         self.stride = stride
-        
-        self.selector = SubregionSelector(feature_dim, top_k=top_k)
-        
+
+        if not scales:
+            raise ValueError("scales must contain at least one grid")
+        if any(rows < 1 or cols < 1 for rows, cols in scales):
+            raise ValueError("scale dimensions must be positive")
+
+        self.query_projection = nn.Linear(feature_dim, feature_dim)
+        self.key_projection = nn.Linear(feature_dim, feature_dim)
+        self.value_projection = nn.Linear(feature_dim, feature_dim)
+        self.fusion = nn.Sequential(
+            nn.Conv1d(feature_dim * 2, feature_dim, kernel_size=1),
+            nn.ReLU(),
+        )
         self.multi_head_attention = MultiHeadScaleAttention(
             feature_dim=feature_dim,
             num_heads=num_heads,
             dropout=dropout
         )
-        
-        self.fusion = nn.Sequential(
-            nn.Conv2d(feature_dim * 2, feature_dim, kernel_size=1),
-            nn.ReLU(),
-            nn.Dropout(dropout)
-        )
-        
-        self.scale_aggregators = nn.ModuleList()
-        base_grid = scales[0]
-        for scale in scales:
-            stride = (base_grid[0] // scale[0], base_grid[1] // scale[1])
-            anchor_count = len(
-                AnchorBoxGenerator(
-                    grid_size=base_grid,
-                    anchor_sizes=anchor_sizes,
-                    strides=stride,
-                ).generate_anchor_boxes()
-            )
-            aggregator = nn.Sequential(
-                nn.Linear(feature_dim * anchor_count, feature_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout)
-            )
-            self.scale_aggregators.append(aggregator)
     
     def forward(self, 
                 features: torch.Tensor,
                 grid_size: Tuple[int, int]) -> torch.Tensor:
         batch_size, num_cells, feature_dim = features.shape
         grid_rows, grid_cols = grid_size
-        
-        assert num_cells == grid_rows * grid_cols, "Number of features doesn't match grid size"
-        
-        scale_features = []
-        
-        for scale_idx, (scale_rows, scale_cols) in enumerate(self.scales):
-            anchor_generator = AnchorBoxGenerator(
-                grid_size=(grid_rows, grid_cols),
-                anchor_sizes=self.anchor_sizes,
-                strides=(grid_rows // scale_rows, grid_cols // scale_cols)
+        if num_cells != grid_rows * grid_cols:
+            raise ValueError("Number of features doesn't match grid size")
+        if tuple(self.scales[0]) != (grid_rows, grid_cols):
+            raise ValueError("the first configured scale must match grid_size")
+        if feature_dim != self.feature_dim:
+            raise ValueError(
+                f"expected feature dimension {self.feature_dim}, got {feature_dim}"
             )
-            
-            anchor_boxes = anchor_generator.generate_anchor_boxes()
-            
-            anchor_features_list = []
-            
-            for anchor_box in anchor_boxes:
-                cell_indices = anchor_generator.get_cells_in_anchor(anchor_box)
-                
-                if len(cell_indices) > 0:
-                    anchor_feat = features[:, cell_indices, :]
-                    
-                    anchors, _ = self.selector(anchor_feat)
-                    
-                    aggregated_anchor_feat = self.aggregate_anchor_features(anchor_feat, anchors)
-                    anchor_features_list.append(aggregated_anchor_feat)
-            
-            if anchor_features_list:
-                all_anchor_features = torch.stack(anchor_features_list, dim=1)
-                
-                scale_feat = self.scale_aggregators[scale_idx](
-                    all_anchor_features.view(batch_size, -1)
-                )
-                
-                scale_features.append(scale_feat.unsqueeze(1))
-        
-        if scale_features:
-            multi_scale_features = torch.cat(scale_features, dim=1)
-            
-            query = multi_scale_features.mean(dim=1, keepdim=True)
-            
-            fused_features = self.multi_head_attention(
-                query=query,
-                key=multi_scale_features,
-                value=multi_scale_features
+
+        current = features
+        current_rows, current_cols = grid_rows, grid_cols
+        scale_tokens = [current.sum(dim=1)]
+
+        for target_rows, target_cols in self.scales[1:]:
+            groups = self._build_groups(
+                current_rows, current_cols, target_rows, target_cols
             )
-            
-            return fused_features.squeeze(1)
-        else:
-            return features.mean(dim=1)
+            anchor_indices = self._select_anchor_indices(
+                current, groups, current_rows, current_cols
+            )
+
+            macro_features = []
+            for group_idx, group in enumerate(groups):
+                cell_indices = torch.tensor(group, device=features.device)
+                cells = current[:, cell_indices, :]
+                anchor = current[
+                    torch.arange(batch_size, device=features.device),
+                    anchor_indices[:, group_idx],
+                ]
+
+                query = self.query_projection(anchor).unsqueeze(1)
+                keys = self.key_projection(cells)
+                values = self.value_projection(cells)
+                scores = torch.matmul(query, keys.transpose(1, 2))
+                scores = scores / math.sqrt(self.feature_dim)
+                weights = F.softmax(scores, dim=-1)
+                fused = torch.matmul(weights, values).squeeze(1)
+
+                combined = torch.cat((fused, anchor), dim=-1).unsqueeze(-1)
+                macro = self.fusion(combined).squeeze(-1)
+                macro_features.append(macro)
+
+            current = torch.stack(macro_features, dim=1)
+            current_rows, current_cols = target_rows, target_cols
+            scale_tokens.append(current.sum(dim=1))
+
+        # Eq. (18) fuses every scale with the global representation obtained
+        # without an initial spatial partition.
+        scale_tokens.append(features.sum(dim=1))
+        tokens = torch.stack(scale_tokens, dim=1)
+        query = tokens.mean(dim=1, keepdim=True)
+        return self.multi_head_attention(query, tokens, tokens).squeeze(1)
+
+    @staticmethod
+    def _build_groups(
+        current_rows: int,
+        current_cols: int,
+        target_rows: int,
+        target_cols: int,
+    ) -> List[List[int]]:
+        """Map each coarser macro-cell to overlapping finer-scale cells."""
+        if target_rows > current_rows or target_cols > current_cols:
+            raise ValueError("scales must progress from fine to coarse")
+
+        groups = []
+        for row in range(target_rows):
+            row_start = (row * current_rows) // target_rows
+            row_end = math.ceil((row + 1) * current_rows / target_rows)
+            for col in range(target_cols):
+                col_start = (col * current_cols) // target_cols
+                col_end = math.ceil((col + 1) * current_cols / target_cols)
+                groups.append([
+                    source_row * current_cols + source_col
+                    for source_row in range(row_start, row_end)
+                    for source_col in range(col_start, col_end)
+                ])
+        return groups
+
+    @staticmethod
+    def _select_anchor_indices(
+        features: torch.Tensor,
+        groups: List[List[int]],
+        rows: int,
+        cols: int,
+        suppression_radius: int = 1,
+    ) -> torch.Tensor:
+        """Select salient anchors while suppressing nearby candidates."""
+        batch_size = features.size(0)
+        saliency = torch.linalg.vector_norm(features, dim=-1)
+        selected = torch.empty(
+            batch_size, len(groups), dtype=torch.long, device=features.device
+        )
+
+        for batch_idx in range(batch_size):
+            candidates = []
+            for group_idx, group in enumerate(groups):
+                indices = torch.tensor(group, device=features.device)
+                order = torch.argsort(saliency[batch_idx, indices], descending=True)
+                ranked = [group[index] for index in order.tolist()]
+                candidates.append((saliency[batch_idx, ranked[0]].item(), group_idx, ranked))
+
+            chosen_coordinates = []
+            for _, group_idx, ranked in sorted(candidates, reverse=True):
+                chosen = ranked[0]
+                for candidate in ranked:
+                    row, col = divmod(candidate, cols)
+                    if all(
+                        max(abs(row - old_row), abs(col - old_col))
+                        > suppression_radius
+                        for old_row, old_col in chosen_coordinates
+                    ):
+                        chosen = candidate
+                        break
+                selected[batch_idx, group_idx] = chosen
+                chosen_coordinates.append(divmod(chosen, cols))
+
+        return selected
     
     def aggregate_anchor_features(self,
                                  anchor_features: torch.Tensor,

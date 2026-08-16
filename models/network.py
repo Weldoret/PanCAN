@@ -314,7 +314,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
     def _initialize_weights(self):
         """Initialize weights"""
         for m in self.modules():
-            if isinstance(m, nn.Conv2d):
+            if isinstance(m, (nn.Conv1d, nn.Conv2d)):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
