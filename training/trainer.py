@@ -19,8 +19,8 @@ import json
 
 from .evaluator import Evaluator, PerformanceMetrics
 from .metrics import MultiLabelMetrics
-from ..utils.checkpoint import save_checkpoint, load_checkpoint
-from ..utils.logger import setup_logger
+from utils.checkpoint import save_checkpoint, load_checkpoint
+from utils.logger import setup_logger
 
 
 class EarlyStopping:
