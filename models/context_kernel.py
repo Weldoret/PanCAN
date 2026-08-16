@@ -213,6 +213,14 @@ class ContextAwareKernelMap(nn.Module):
             kernel_type=kernel_type,
             learnable=True
         )
+        # The Gaussian mapping intentionally keeps the original feature space
+        # for similarity computation, but the rest of the network consumes the
+        # configured kernel dimension. Project that downstream representation
+        # explicitly instead of reshaping a tensor with the wrong size.
+        self.feature_projection = (
+            nn.Linear(feature_dim, kernel_dim)
+            if feature_dim != kernel_dim else nn.Identity()
+        )
         
         self.context_kernel = ContextAwareKernel(
             alpha=alpha,
@@ -230,6 +238,7 @@ class ContextAwareKernelMap(nn.Module):
         K, info = self.context_kernel(S, adjacency_matrices)
         
         kernel_features = self.kernel_mapping(features.view(-1, feature_dim))
+        kernel_features = self.feature_projection(kernel_features)
         kernel_features = kernel_features.view(batch_size, num_nodes, self.kernel_dim)
         
         return K, kernel_features

@@ -79,10 +79,11 @@ class MultiOrderNeighborhood(nn.Module):
 class MultiOrderContextAggregator(nn.Module):
     """Multi-order context aggregator"""
     
-    def __init__(self, 
+    def __init__(self,
                  feature_dim: int,
                  max_order: int = 3,
-                 use_attention: bool = True):
+                 use_attention: bool = True,
+                 num_directions: int = 4):
         """
         Initialize multi-order context aggregator
         
@@ -95,6 +96,7 @@ class MultiOrderContextAggregator(nn.Module):
         self.feature_dim = feature_dim
         self.max_order = max_order
         self.use_attention = use_attention
+        self.num_directions = num_directions
         
         self.neighborhood_system = MultiOrderNeighborhood(max_order)
         

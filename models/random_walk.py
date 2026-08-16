@@ -7,7 +7,7 @@ Implements context information propagation based on random walk.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional, List, Dict, Any
+from typing import Tuple, Optional, List, Dict, Any, Union
 import math
 
 
@@ -105,8 +105,19 @@ class AttentionBasedRandomWalk(nn.Module):
             
             if self.threshold is not None:
                 mask = scores > self.threshold
-                scores = scores * mask.float()
-                scores = scores / (scores.sum(dim=1, keepdim=True) + 1e-8)
+                masked_scores = scores * mask.float()
+                normalizer = masked_scores.sum(dim=1, keepdim=True)
+
+                # A threshold can remove every transition for a node. Keep the
+                # most likely transition in that case so the walk remains a
+                # valid probability distribution instead of returning zeros.
+                fallback = F.one_hot(
+                    scores.argmax(dim=1), num_classes=scores.size(1)
+                ).to(dtype=scores.dtype)
+                normalized_scores = masked_scores / normalizer.clamp_min(1e-8)
+                scores = torch.where(
+                    (normalizer <= 1e-8), fallback, normalized_scores
+                )
             
             second_order_values = self.value_proj(second_order_features)
             weighted_features = torch.bmm(scores.unsqueeze(1), second_order_values)
@@ -283,3 +294,212 @@ class RandomWalkContextAggregator(nn.Module):
             second_order.discard(n)
         
         return list(second_order)
+
+
+class RandomWalkAttention(nn.Module):
+    """Random-walk context aggregation from PanCAN's Eqs. (8)--(16).
+
+    Each directional adjacency matrix is treated as its own neighborhood type
+    ``c``. For every order ``k``, this module uses separate query, matching, and
+    value projections, computes transition probabilities over only
+    ``N_c^(k)(x)``, and concatenates the resulting contexts before reducing the
+    representation with a pointwise projection. ``num_heads`` is retained for
+    compatibility with the repository's configuration; the paper applies
+    multi-head attention in the cross-scale module, not in RWCA.
+    """
+
+    def __init__(self,
+                 feature_dim: int,
+                 num_heads: int = 8,
+                 dropout: float = 0.1,
+                 use_threshold: bool = True,
+                 threshold: float = 0.71,
+                 max_order: int = 3,
+                 num_directions: int = 4):
+        super().__init__()
+
+        if max_order < 1:
+            raise ValueError("max_order must be positive")
+        if num_directions < 1:
+            raise ValueError("num_directions must be positive")
+
+        self.feature_dim = feature_dim
+        self.num_heads = num_heads
+        self.max_order = max_order
+        self.num_directions = num_directions
+        self.use_threshold = use_threshold
+        self.threshold = threshold
+
+        # These modules are the paper's W_q^k, W_m^k, and W_v^k. The existing
+        # TransitionProbabilityCalculator supplies the first two projections
+        # and the scaled dot-product calculation.
+        self.transition_calculators = nn.ModuleList(
+            TransitionProbabilityCalculator(feature_dim)
+            for _ in range(max_order)
+        )
+        self.value_projections = nn.ModuleList(
+            nn.Linear(feature_dim, feature_dim) for _ in range(max_order)
+        )
+
+        full_feature_dim = feature_dim * (1 + num_directions * max_order)
+        self.dimension_reduction = nn.Conv1d(
+            in_channels=full_feature_dim,
+            out_channels=feature_dim,
+            kernel_size=1,
+        )
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self,
+                features: torch.Tensor,
+                context_features: torch.Tensor,
+                adjacency: Union[torch.Tensor, List[torch.Tensor], Any]) -> torch.Tensor:
+        """Return the reduced multi-order context representation ``[B, N, F]``.
+
+        ``context_features`` supplies the feature vectors used by Eqs. (8)--(9)
+        while ``features`` supplies the values in Eq. (10). In the current
+        network these tensors have the same shape, but keeping them separate
+        lets the random-walk stage consume the preceding context representation
+        without changing the paper's value aggregation.
+        """
+        if features.dim() != 3 or context_features.dim() != 3:
+            raise ValueError("features and context_features must be 3D tensors")
+        if features.shape != context_features.shape:
+            raise ValueError(
+                "features and context_features must have the same shape"
+            )
+        if features.size(-1) != self.feature_dim:
+            raise ValueError(
+                f"expected feature dimension {self.feature_dim}, got {features.size(-1)}"
+            )
+
+        directional_neighbors = self._as_directional_neighbors(
+            adjacency, features.device
+        )
+        if len(directional_neighbors) != self.num_directions:
+            raise ValueError(
+                f"expected {self.num_directions} directional neighborhoods, "
+                f"got {len(directional_neighbors)}"
+            )
+        if len(directional_neighbors[0]) != features.size(1):
+            raise ValueError("adjacency and feature node counts do not match")
+
+        context_parts = [features]
+        for direction_neighbors in directional_neighbors:
+            order_contexts = []
+            for order in range(1, self.max_order + 1):
+                order_contexts.append(
+                    self._aggregate_order(
+                        context_features,
+                        features,
+                        direction_neighbors,
+                        order,
+                    )
+                )
+            context_parts.extend(order_contexts)
+
+        full_context = torch.cat(context_parts, dim=-1)
+        reduced = self.dimension_reduction(full_context.transpose(1, 2))
+        reduced = reduced.transpose(1, 2)
+        return self.dropout(reduced)
+
+    def _aggregate_order(self,
+                         attention_features: torch.Tensor,
+                         value_features: torch.Tensor,
+                         first_order_neighbors: List[List[int]],
+                         order: int) -> torch.Tensor:
+        """Evaluate Eqs. (8)--(10) for one neighborhood type and order."""
+        batch_size, num_nodes, _ = attention_features.shape
+        aggregated = attention_features.new_zeros(
+            batch_size, num_nodes, self.feature_dim
+        )
+        calculator = self.transition_calculators[order - 1]
+        value_projection = self.value_projections[order - 1]
+
+        for node_idx in range(num_nodes):
+            neighbors = self._get_order_neighbors(
+                first_order_neighbors, node_idx, order
+            )
+            if not neighbors:
+                continue
+
+            center = attention_features[:, node_idx, :]
+            neighbor_attention = attention_features[:, neighbors, :]
+            probabilities = calculator(center, neighbor_attention)
+
+            if self.use_threshold:
+                probabilities = probabilities * (
+                    probabilities > self.threshold
+                ).to(probabilities.dtype)
+
+            values = value_projection(value_features[:, neighbors, :])
+            aggregated[:, node_idx, :] = torch.bmm(
+                probabilities.unsqueeze(1), values
+            ).squeeze(1)
+
+        return aggregated
+
+    @staticmethod
+    def _get_order_neighbors(first_order_neighbors: List[List[int]],
+                             node_idx: int,
+                             order: int) -> List[int]:
+        """Build the recursive k-th order neighborhood for one direction."""
+        neighbors = set(first_order_neighbors[node_idx])
+        if order == 1:
+            return sorted(neighbors)
+
+        for _ in range(2, order + 1):
+            next_neighbors = set()
+            for neighbor in neighbors:
+                if neighbor != node_idx:
+                    next_neighbors.update(first_order_neighbors[neighbor])
+            next_neighbors.discard(node_idx)
+            neighbors = next_neighbors
+
+        return sorted(neighbors)
+
+    @staticmethod
+    def _as_directional_neighbors(
+            adjacency: Union[torch.Tensor, List[torch.Tensor], Any],
+            device: torch.device) -> List[List[List[int]]]:
+        """Convert adjacency input into one neighbor list per context type."""
+        if hasattr(adjacency, "adjacency_matrices"):
+            adjacency = adjacency.adjacency_matrices
+
+        if isinstance(adjacency, torch.Tensor):
+            if adjacency.dim() != 2:
+                raise ValueError("adjacency tensor must be 2D")
+            if adjacency.dtype in (torch.int8, torch.int16, torch.int32,
+                                   torch.int64, torch.uint8):
+                # An index matrix has one column per directional context.
+                adjacency = [adjacency[:, direction]
+                             for direction in range(adjacency.size(1))]
+            else:
+                adjacency = [adjacency]
+
+        if not isinstance(adjacency, (list, tuple)) or not adjacency:
+            raise ValueError("adjacency must contain at least one matrix")
+
+        directional_neighbors = []
+        for matrix in adjacency:
+            matrix = matrix.to(device=device)
+            if matrix.dim() == 1:
+                rows = [[int(index)] if int(index) >= 0 else []
+                        for index in matrix.tolist()]
+            elif matrix.dim() == 2:
+                if matrix.size(0) != matrix.size(1):
+                    raise ValueError(
+                        "dense adjacency matrices must be square"
+                    )
+                rows = [
+                    torch.nonzero(matrix[node_idx] != 0, as_tuple=False)
+                    .flatten().tolist()
+                    for node_idx in range(matrix.size(0))
+                ]
+            else:
+                raise ValueError("each adjacency entry must be a vector or matrix")
+            directional_neighbors.append(rows)
+
+        num_nodes = len(directional_neighbors[0])
+        if any(len(rows) != num_nodes for rows in directional_neighbors):
+            raise ValueError("all directional neighborhoods must have equal node counts")
+        return directional_neighbors

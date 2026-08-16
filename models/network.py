@@ -260,16 +260,18 @@ class MultiScaleContextAwareNetwork(nn.Module):
         
         self.multi_order_aggregator = MultiOrderContextAggregator(
             max_order=config.network.max_order,
-            feature_dim=self.feature_dim,
+            feature_dim=self.feature_dim * 2,
             num_directions=config.network.num_directions
         ).to(self.device)
-        
+
         self.random_walk = RandomWalkAttention(
             feature_dim=self.feature_dim * 2,
             num_heads=config.network.attention_heads,
             dropout=config.network.attention_dropout,
             use_threshold=True,
-            threshold=config.network.random_walk_threshold
+            threshold=config.network.random_walk_threshold,
+            max_order=config.network.max_order,
+            num_directions=config.network.num_directions,
         ).to(self.device)
         
         self.multi_scale_aggregator = MultiScaleFeatureAggregator(
@@ -383,8 +385,8 @@ class MultiScaleContextAwareNetwork(nn.Module):
         kernel_matrix, kernel_features = self.context_kernel(grid_features, self.adjacency_matrices)
         
         multi_order_features = self.multi_order_aggregator(
-            kernel_features, 
-            self.adjacency_matrices
+            kernel_features,
+            self.neighborhood_system.adjacency_index
         )
         
         random_walk_features = self.random_walk(
@@ -395,7 +397,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
         
         multi_scale_features = self.multi_scale_aggregator(
             random_walk_features,
-            self.neighborhood_system
+            (config.network.grid_rows, config.network.grid_cols)
         )
         
         deep_kernel_features = self.deep_kernel_network(

@@ -251,12 +251,18 @@ class MultiScaleFeatureAggregator(nn.Module):
                  anchor_sizes: List[Tuple[int, int]],
                  top_k: int = 3,
                  num_heads: int = 8,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1,
+                 attention_heads: Optional[int] = None,
+                 stride: Optional[int] = None):
         super().__init__()
+        if attention_heads is not None:
+            num_heads = attention_heads
+
         self.feature_dim = feature_dim
         self.scales = scales
         self.anchor_sizes = anchor_sizes
         self.top_k = top_k
+        self.stride = stride
         
         self.selector = SubregionSelector(feature_dim, top_k=top_k)
         
