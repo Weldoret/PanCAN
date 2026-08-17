@@ -214,7 +214,9 @@ class ContextAwareKernelMap(nn.Module):
                  beta: float = 1.0,
                  num_directions: int = 4,
                  kernel_type: str = 'gaussian',
-                 num_layers: int = 1):
+                 num_layers: int = 1,
+                 num_nodes: Optional[int] = None,
+                 learnable_neighborhoods: bool = True):
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be positive")
@@ -222,6 +224,8 @@ class ContextAwareKernelMap(nn.Module):
         self.feature_dim = feature_dim
         self.kernel_dim = kernel_dim
         self.num_directions = num_directions
+        self.num_layers = num_layers
+        self.num_nodes = num_nodes
         
         self.kernel_mapping = KernelMappingLayer(
             input_dim=feature_dim,
@@ -251,6 +255,14 @@ class ContextAwareKernelMap(nn.Module):
             )
             for _ in range(num_layers)
         ])
+
+        if learnable_neighborhoods and num_nodes is not None:
+            initial_logit = torch.log(torch.expm1(torch.tensor(1.0))).item()
+            self.neighborhood_logits = nn.Parameter(
+                torch.full((num_layers, num_directions, num_nodes), initial_logit)
+            )
+        else:
+            self.register_parameter('neighborhood_logits', None)
     
     def forward(self,
                 features: torch.Tensor,
@@ -288,13 +300,14 @@ class ContextAwareKernelMap(nn.Module):
             matrices.append(matrix)
 
         sqrt_gamma = self.context_kernel.gamma ** 0.5
-        for layer in self.mapping_layers:
+        for layer_index, layer in enumerate(self.mapping_layers):
+            layer_matrices = self._weighted_adjacencies(matrices, layer_index)
             directional_features = [
                 torch.bmm(
                     matrix.unsqueeze(0).expand(batch_size, -1, -1),
                     kernel_features,
                 )
-                for matrix in matrices
+                for matrix in layer_matrices
             ]
             unfolded = torch.cat(
                 [initial_features]
@@ -311,6 +324,31 @@ class ContextAwareKernelMap(nn.Module):
             kernel_features.transpose(1, 2),
         )
         return kernel_matrix, kernel_features
+
+    def get_adjacency_matrices(
+            self, adjacency_matrices: List[torch.Tensor]) -> List[torch.Tensor]:
+        """Return the final learned directional neighborhoods for downstream stages."""
+        if self.neighborhood_logits is None:
+            return adjacency_matrices
+        matrices = [matrix.to(self.neighborhood_logits.device)
+                    for matrix in adjacency_matrices]
+        return self._weighted_adjacencies(matrices, self.num_layers - 1)
+
+    def _weighted_adjacencies(
+            self,
+            adjacency_matrices: List[torch.Tensor],
+            layer_index: int,
+    ) -> List[torch.Tensor]:
+        if self.neighborhood_logits is None:
+            return adjacency_matrices
+        if len(adjacency_matrices) != self.num_directions:
+            raise ValueError("adjacency count does not match neighborhood parameters")
+        if any(matrix.size(0) != self.num_nodes for matrix in adjacency_matrices):
+            raise ValueError("adjacency size does not match neighborhood parameters")
+
+        weights = F.softplus(self.neighborhood_logits[layer_index])
+        return [matrix * weights[direction].unsqueeze(-1)
+                for direction, matrix in enumerate(adjacency_matrices)]
     
     def _compute_similarity_matrix(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, num_nodes, feature_dim = features.shape

@@ -67,6 +67,26 @@ class ContextAwareKernelMapTest(unittest.TestCase):
 
         self.assertTrue(torch.allclose(mapped, features))
 
+    def test_learnable_neighborhoods_start_as_the_fixed_grid(self):
+        module = ContextAwareKernelMap(
+            feature_dim=2,
+            kernel_dim=2,
+            alpha=0.25,
+            beta=1.0,
+            num_directions=1,
+            kernel_type="gaussian",
+            num_nodes=2,
+        )
+
+        adjacency = [torch.eye(2)]
+        learned = module.get_adjacency_matrices(adjacency)
+        self.assertTrue(torch.allclose(learned[0], adjacency[0], atol=1e-6))
+
+        features = torch.randn(1, 2, 2, requires_grad=True)
+        _, mapped = module(features, adjacency)
+        mapped.sum().backward()
+        self.assertIsNotNone(module.neighborhood_logits.grad)
+
 
 if __name__ == "__main__":
     unittest.main()

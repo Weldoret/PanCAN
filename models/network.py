@@ -255,6 +255,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
             num_directions=config.network.num_directions,
             kernel_type='gaussian',
             num_layers=config.network.context_layers,
+            num_nodes=config.network.num_blocks,
         ).to(self.device)
         
         self.multi_order_aggregator = MultiOrderContextAggregator(
@@ -386,6 +387,9 @@ class MultiScaleContextAwareNetwork(nn.Module):
         grid_features = grid_features.permute(0, 2, 1)
         
         kernel_matrix, kernel_features = self.context_kernel(grid_features, self.adjacency_matrices)
+        learned_adjacency_matrices = self.context_kernel.get_adjacency_matrices(
+            self.adjacency_matrices
+        )
         
         multi_order_features = self.multi_order_aggregator(
             kernel_features,
@@ -395,7 +399,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
         random_walk_features = self.random_walk(
             kernel_features,
             multi_order_features,
-            self.adjacency_matrices
+            learned_adjacency_matrices
         )
         
         multi_scale_features = self.multi_scale_aggregator(
@@ -405,7 +409,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
         
         deep_kernel_features = self.deep_kernel_network(
             multi_scale_features,
-            self.adjacency_matrices
+            learned_adjacency_matrices
         )
         
         if len(deep_kernel_features.shape) == 3:
