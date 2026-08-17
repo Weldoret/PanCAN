@@ -255,7 +255,8 @@ class MultiScaleContextAwareNetwork(nn.Module):
             alpha=config.network.alpha,
             beta=config.network.beta,
             num_directions=config.network.num_directions,
-            kernel_type='gaussian'
+            kernel_type='gaussian',
+            num_layers=config.network.context_layers,
         ).to(self.device)
         
         self.multi_order_aggregator = MultiOrderContextAggregator(
@@ -286,7 +287,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
             input_dim=self.feature_dim * 2,
             hidden_dims=config.network.kernel_feature_dims,
             num_directions=config.network.num_directions,
-            gamma=config.network.gamma,
+            gamma=config.network.alpha / config.network.beta,
             use_explicit_map=True
         ).to(self.device)
         

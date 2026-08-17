@@ -65,6 +65,7 @@ class NetworkConfig(ConfigMixin):
     beta: float = 1.0
     gamma: float = 0.5
     num_directions: int = 4
+    context_layers: int = 3
     max_order: int = 3
     attention_heads: int = 8
     attention_dropout: float = 0.1
@@ -88,8 +89,14 @@ class NetworkConfig(ConfigMixin):
             raise ValueError("grid dimensions must be positive")
         if self.num_classes < 1:
             raise ValueError("num_classes must be positive")
+        if self.alpha < 0:
+            raise ValueError("alpha must be non-negative")
+        if self.beta <= 0:
+            raise ValueError("beta must be positive")
         if self.num_directions not in (4, 8):
             raise ValueError("num_directions must be 4 or 8")
+        if self.context_layers < 1:
+            raise ValueError("context_layers must be positive")
         if self.attention_heads < 1:
             raise ValueError("attention_heads must be positive")
 

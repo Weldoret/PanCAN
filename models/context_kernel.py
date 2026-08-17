@@ -55,6 +55,12 @@ class ContextAwareKernel(nn.Module):
                  max_iterations: int = 10,
                  convergence_threshold: float = 1e-6):
         super().__init__()
+        if alpha < 0:
+            raise ValueError("alpha must be non-negative")
+        if beta <= 0:
+            raise ValueError("beta must be positive")
+        if num_directions < 1:
+            raise ValueError("num_directions must be positive")
         self.alpha = alpha
         self.beta = beta
         self.gamma = alpha / beta
@@ -193,7 +199,13 @@ class KernelMappingLayer(nn.Module):
 
 
 class ContextAwareKernelMap(nn.Module):
-    """Context-aware kernel mapping network"""
+    """Explicit context-aware kernel map from the paper's Eqs. (3)--(6).
+
+    Each mapping layer concatenates the initial cell map with directional
+    aggregates of the current map, scaled by ``sqrt(alpha / beta)``, then
+    applies a pointwise projection to keep the representation usable by later
+    modules.
+    """
     
     def __init__(self,
                  feature_dim: int,
@@ -201,8 +213,12 @@ class ContextAwareKernelMap(nn.Module):
                  alpha: float = 0.5,
                  beta: float = 1.0,
                  num_directions: int = 4,
-                 kernel_type: str = 'gaussian'):
+                 kernel_type: str = 'gaussian',
+                 num_layers: int = 1):
         super().__init__()
+        if num_layers < 1:
+            raise ValueError("num_layers must be positive")
+
         self.feature_dim = feature_dim
         self.kernel_dim = kernel_dim
         self.num_directions = num_directions
@@ -227,21 +243,74 @@ class ContextAwareKernelMap(nn.Module):
             beta=beta,
             num_directions=num_directions
         )
+        self.mapping_layers = nn.ModuleList([
+            nn.Conv1d(
+                kernel_dim * (num_directions + 1),
+                kernel_dim,
+                kernel_size=1,
+            )
+            for _ in range(num_layers)
+        ])
     
-    def forward(self, 
+    def forward(self,
                 features: torch.Tensor,
                 adjacency_matrices: List[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, num_nodes, feature_dim = features.shape
-        
-        S = self._compute_similarity_matrix(features)
-        
-        K, info = self.context_kernel(S, adjacency_matrices)
-        
+
+        if feature_dim != self.feature_dim:
+            raise ValueError(
+                f"expected feature dimension {self.feature_dim}, got {feature_dim}"
+            )
+        if len(adjacency_matrices) != self.num_directions:
+            raise ValueError(
+                f"expected {self.num_directions} adjacency matrices, "
+                f"got {len(adjacency_matrices)}"
+            )
+
+        # Phi^[0] is the approximate feature map initialized from the visual
+        # representation, as in Eq. (3)'s definition of Phi^[0].
         kernel_features = self.kernel_mapping(features.reshape(-1, feature_dim))
-        kernel_features = self.feature_projection(kernel_features)
+        if kernel_features.size(-1) != self.kernel_dim:
+            kernel_features = self.feature_projection(kernel_features)
         kernel_features = kernel_features.view(batch_size, num_nodes, self.kernel_dim)
-        
-        return K, kernel_features
+        initial_features = kernel_features
+
+        matrices = []
+        for matrix in adjacency_matrices:
+            matrix = matrix.to(
+                device=kernel_features.device,
+                dtype=kernel_features.dtype,
+            )
+            if matrix.shape != (num_nodes, num_nodes):
+                raise ValueError(
+                    "adjacency matrices must match the number of feature nodes"
+                )
+            matrices.append(matrix)
+
+        sqrt_gamma = self.context_kernel.gamma ** 0.5
+        for layer in self.mapping_layers:
+            directional_features = [
+                torch.bmm(
+                    matrix.unsqueeze(0).expand(batch_size, -1, -1),
+                    kernel_features,
+                )
+                for matrix in matrices
+            ]
+            unfolded = torch.cat(
+                [initial_features]
+                + [sqrt_gamma * feature for feature in directional_features],
+                dim=-1,
+            )
+            kernel_features = layer(unfolded.transpose(1, 2)).transpose(1, 2)
+
+        # The Gram matrix is the inner product of the unfolded cell maps
+        # (Eq. (4)); retaining the batch dimension keeps every image's map
+        # independent while allowing the network to consume Phi^[T].
+        kernel_matrix = torch.bmm(
+            kernel_features,
+            kernel_features.transpose(1, 2),
+        )
+        return kernel_matrix, kernel_features
     
     def _compute_similarity_matrix(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, num_nodes, feature_dim = features.shape
@@ -252,16 +321,13 @@ class ContextAwareKernelMap(nn.Module):
         
         return S
     
-    def compute_image_kernel(self, 
+    def compute_image_kernel(self,
                            image1_features: torch.Tensor,
                            image2_features: torch.Tensor,
                            adjacency_matrices: List[torch.Tensor]) -> torch.Tensor:
-        S1 = self.kernel_mapping.compute_kernel(image1_features, image1_features)
-        S2 = self.kernel_mapping.compute_kernel(image2_features, image2_features)
-        
-        K1, _ = self.context_kernel(S1, adjacency_matrices)
-        K2, _ = self.context_kernel(S2, adjacency_matrices)
-        
-        kernel_value = torch.sum(K1 * K2.t())
-        
-        return kernel_value
+        _, mapped1 = self.forward(image1_features.unsqueeze(0), adjacency_matrices)
+        _, mapped2 = self.forward(image2_features.unsqueeze(0), adjacency_matrices)
+
+        image1_representation = mapped1.sum(dim=1)
+        image2_representation = mapped2.sum(dim=1)
+        return torch.sum(image1_representation * image2_representation)
