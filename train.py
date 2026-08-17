@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import ExperimentConfig, NetworkConfig, DatasetConfig, TrainingConfig
 from models import create_model, create_custom_network
-from training import create_trainer, create_evaluator
+from training import build_label_groups, create_trainer, create_evaluator
 from utils import setup_experiment, create_data_loaders, CheckpointManager
 from utils.visualization import plot_metrics
 
@@ -173,7 +173,7 @@ def create_experiment_directories(config, experiment_name, args=None):
     return dirs
 
 
-def setup_model(config, device, experiment_dirs):
+def setup_model(config, device, experiment_dirs, class_groups=None, group_weights=None):
     print("Creating model...")
     
     # Select model creation method
@@ -200,7 +200,9 @@ def setup_model(config, device, experiment_dirs):
         print(f"Using standard network architecture: {config.network.model_name}")
         model = create_model(
             config=config,
-            device=device
+            device=device,
+            class_groups=class_groups,
+            group_weights=group_weights,
         )
     
     # Print model information
@@ -351,9 +353,24 @@ def main():
         print(f"Validation set: {len(val_loader.dataset)} samples")
     if test_loader:
         print(f"Test set: {len(test_loader.dataset)} samples")
-    
+
+    class_groups = group_weights = None
+    if config.network.use_grouped_fc:
+        train_labels = train_loader.dataset.tensors[1]
+        class_groups, group_weights = build_label_groups(
+            train_labels,
+            num_groups=config.network.num_groups,
+        )
+        print(f"Label groups: {class_groups}")
+
     # Create model
-    model = setup_model(config, device, experiment_dirs)
+    model = setup_model(
+        config,
+        device,
+        experiment_dirs,
+        class_groups=class_groups,
+        group_weights=group_weights,
+    )
     
     if args.eval_only:
         # Evaluation-only mode

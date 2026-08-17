@@ -18,6 +18,7 @@ from datetime import datetime
 import json
 
 from .evaluator import Evaluator, PerformanceMetrics
+from .losses import GroupedMultiLabelLoss
 from .metrics import MultiLabelMetrics
 from utils.checkpoint import save_checkpoint, load_checkpoint
 from utils.logger import setup_logger
@@ -573,8 +574,14 @@ class TrainingManager:
     def _create_criterion(self) -> nn.Module:
         """Create loss function"""
         loss_type = self.config.training.loss_function.lower()
-        
+        classifier = getattr(self.model, "classifier", None)
+
         if loss_type == 'bce':
+            if getattr(classifier, "use_grouped_fc", False):
+                return GroupedMultiLabelLoss(
+                    classifier.class_groups,
+                    classifier.group_weights,
+                )
             return nn.BCEWithLogitsLoss()
         elif loss_type == 'focal':
             from .losses import FocalLoss
@@ -589,6 +596,14 @@ class TrainingManager:
         else:
             warnings.warn(f"Unknown loss function: {loss_type}, using BCEWithLogitsLoss")
             return nn.BCEWithLogitsLoss()
+
+    def _compute_training_loss(self, outputs, labels):
+        loss = self.criterion(outputs, labels)
+        classifier = getattr(self.model, "classifier", None)
+        group_l2 = getattr(self.config.training, "group_l2", 0.0)
+        if group_l2 and getattr(classifier, "use_grouped_fc", False):
+            loss = loss + 0.5 * group_l2 * classifier.grouped_l2()
+        return loss
     
     def _create_scheduler(self) -> Optional[LearningRateScheduler]:
         """Create learning rate scheduler"""
@@ -636,7 +651,7 @@ class TrainingManager:
             
             with amp.autocast(enabled=self.mixed_precision.enabled):
                 outputs = self.model(inputs)
-                loss = self.criterion(outputs, labels)
+                loss = self._compute_training_loss(outputs, labels)
             
             self.mixed_precision.backward(loss / self.gradient_accumulator.accumulation_steps, self.optimizer)
             

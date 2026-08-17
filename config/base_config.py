@@ -77,6 +77,7 @@ class NetworkConfig(ConfigMixin):
     final_feature_dim: int | None = None
     classifier_dropout: float = 0.5
     use_grouped_fc: bool = True
+    num_groups: int = 5
 
     FEATURE_DIMS: ClassVar[dict[str, int]] = {
         "resnet34": 512,
@@ -99,6 +100,8 @@ class NetworkConfig(ConfigMixin):
             raise ValueError("context_layers must be positive")
         if self.attention_heads < 1:
             raise ValueError("attention_heads must be positive")
+        if self.num_groups < 1:
+            raise ValueError("num_groups must be positive")
 
         if self.backbone_feature_dim is None:
             self.backbone_feature_dim = self.FEATURE_DIMS.get(self.backbone_name, 2048)
@@ -181,6 +184,7 @@ class TrainingConfig(ConfigMixin):
     focal_gamma: float = 2.0
     asymmetric_gamma_neg: float = 4.0
     asymmetric_gamma_pos: float = 1.0
+    group_l2: float = 1e-4
 
     def __post_init__(self) -> None:
         if self.num_epochs < 1 or self.learning_rate <= 0:
@@ -189,6 +193,8 @@ class TrainingConfig(ConfigMixin):
             raise ValueError(f"Unsupported optimizer: {self.optimizer}")
         if self.accumulation_steps < 1 or self.save_frequency < 1:
             raise ValueError("accumulation_steps and save_frequency must be positive")
+        if self.group_l2 < 0:
+            raise ValueError("group_l2 must be non-negative")
 
 
 @dataclass

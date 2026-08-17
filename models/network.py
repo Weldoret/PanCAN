@@ -7,7 +7,7 @@ Implements the complete multi-scale context-aware deep kernel mapping network.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, List, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any, Sequence
 import torchvision.models as models
 
 # Import other modules
@@ -142,7 +142,9 @@ class MultiLabelClassifier(nn.Module):
                  num_classes: int,
                  use_grouped_fc: bool = True,
                  num_groups: int = 5,
-                 dropout_rate: float = 0.5):
+                 dropout_rate: float = 0.5,
+                 class_groups: Optional[Sequence[Sequence[int]]] = None,
+                 group_weights: Optional[Sequence[float]] = None):
         """
         Initialize multi-label classifier
         
@@ -157,32 +159,36 @@ class MultiLabelClassifier(nn.Module):
         self.input_dim = input_dim
         self.num_classes = num_classes
         self.use_grouped_fc = use_grouped_fc
-        self.num_groups = num_groups
         self.dropout_rate = dropout_rate
-        
+
         self.dropout = nn.Dropout(dropout_rate)
-        
+
         if use_grouped_fc:
+            if class_groups is None:
+                class_groups = [list(range(num_classes))]
+            self.class_groups = tuple(tuple(int(index) for index in group) for group in class_groups)
+            self._validate_groups(self.class_groups, num_classes)
+            self.num_groups = len(self.class_groups)
+            if group_weights is None:
+                group_weights = [1.0] * self.num_groups
+            if len(group_weights) != self.num_groups:
+                raise ValueError("group_weights must match class_groups")
+            self.register_buffer(
+                "group_weights",
+                torch.as_tensor(group_weights, dtype=torch.float32),
+            )
             self.group_classifiers = nn.ModuleList()
-            
-            classes_per_group = num_classes // num_groups
-            remainder = num_classes % num_groups
-            
-            current_start = 0
-            for i in range(num_groups):
-                group_size = classes_per_group + (1 if i < remainder else 0)
-                
-                if group_size > 0:
-                    classifier = nn.Sequential(
-                        nn.Linear(input_dim, 512),
-                        nn.ReLU(inplace=True),
-                        nn.Dropout(dropout_rate),
-                        nn.Linear(512, group_size)
-                    )
-                    self.group_classifiers.append(classifier)
-                
-                current_start += group_size
+            self._group_index_names = []
+            for group_index, group in enumerate(self.class_groups):
+                self.register_buffer(
+                    f"group_indices_{group_index}",
+                    torch.tensor(group, dtype=torch.long),
+                )
+                self._group_index_names.append(f"group_indices_{group_index}")
+                self.group_classifiers.append(nn.Linear(input_dim, len(group)))
         else:
+            self.class_groups = ((tuple(range(num_classes))),)
+            self.num_groups = 1
             self.classifier = nn.Sequential(
                 nn.Linear(input_dim, 1024),
                 nn.ReLU(inplace=True),
@@ -205,17 +211,30 @@ class MultiLabelClassifier(nn.Module):
         """
         x = self.dropout(x)
         
-        if self.use_grouped_fc and self.num_groups > 1:
-            outputs = []
-            for classifier in self.group_classifiers:
-                output = classifier(x)
-                outputs.append(output)
-            
-            logits = torch.cat(outputs, dim=1)
+        if self.use_grouped_fc:
+            logits = x.new_zeros(x.size(0), self.num_classes)
+            for classifier, index_name in zip(self.group_classifiers, self._group_index_names):
+                logits = logits.index_copy(1, getattr(self, index_name), classifier(x))
         else:
             logits = self.classifier(x)
-        
+
         return logits
+
+    @staticmethod
+    def _validate_groups(class_groups, num_classes):
+        if any(not group for group in class_groups):
+            raise ValueError("class_groups must not contain empty groups")
+        flattened = sorted(index for group in class_groups for index in group)
+        if flattened != list(range(num_classes)):
+            raise ValueError("class_groups must partition every class exactly once")
+
+    def grouped_l2(self) -> torch.Tensor:
+        if not self.use_grouped_fc:
+            return next(self.parameters()).new_zeros(())
+        return sum(
+            classifier.weight.pow(2).sum()
+            for classifier in self.group_classifiers
+        )
 
 
 class ScaleContextBlock(nn.Module):
@@ -261,7 +280,9 @@ class MultiScaleContextAwareNetwork(nn.Module):
                  backbone: nn.Module,
                  num_classes: int,
                  config,
-                 device: Optional[torch.device] = None):
+                 device: Optional[torch.device] = None,
+                 class_groups: Optional[Sequence[Sequence[int]]] = None,
+                 group_weights: Optional[Sequence[float]] = None):
         """
         Initialize multi-scale context-aware network
         
@@ -356,8 +377,10 @@ class MultiScaleContextAwareNetwork(nn.Module):
             input_dim=config.network.final_feature_dim // 4,
             num_classes=num_classes,
             use_grouped_fc=config.network.use_grouped_fc,
-            num_groups=5,
-            dropout_rate=config.network.classifier_dropout
+            num_groups=config.network.num_groups,
+            dropout_rate=config.network.classifier_dropout,
+            class_groups=class_groups,
+            group_weights=group_weights,
         ).to(self.device)
         
         self.batch_norm = nn.BatchNorm1d(self.feature_dim).to(self.device)

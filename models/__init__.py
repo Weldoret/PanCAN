@@ -10,7 +10,12 @@ from .pretrained import (
 from .random_walk import RandomWalkAttention
 
 
-def create_model(config, num_classes=None, device=None):
+def create_model(
+        config,
+        num_classes=None,
+        device=None,
+        class_groups=None,
+        group_weights=None):
     from .network import MultiScaleContextAwareNetwork
 
     num_classes = num_classes or config.network.num_classes
@@ -23,6 +28,8 @@ def create_model(config, num_classes=None, device=None):
         num_classes=num_classes,
         config=config.network,
         device=device,
+        class_groups=class_groups,
+        group_weights=group_weights,
     )
 
 
