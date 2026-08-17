@@ -282,9 +282,10 @@ class MultiScaleFeatureAggregator(nn.Module):
             dropout=dropout
         )
     
-    def forward(self, 
+    def forward(self,
                 features: torch.Tensor,
-                grid_size: Tuple[int, int]) -> torch.Tensor:
+                grid_size: Tuple[int, int],
+                coarse_context_processors: Optional[List[nn.Module]] = None) -> torch.Tensor:
         batch_size, num_cells, feature_dim = features.shape
         grid_rows, grid_cols = grid_size
         if num_cells != grid_rows * grid_cols:
@@ -295,12 +296,14 @@ class MultiScaleFeatureAggregator(nn.Module):
             raise ValueError(
                 f"expected feature dimension {self.feature_dim}, got {feature_dim}"
             )
+        if coarse_context_processors is not None and len(coarse_context_processors) != len(self.scales) - 1:
+            raise ValueError("one context processor is required for each coarser scale")
 
         current = features
         current_rows, current_cols = grid_rows, grid_cols
         scale_tokens = [current.sum(dim=1)]
 
-        for target_rows, target_cols in self.scales[1:]:
+        for scale_index, (target_rows, target_cols) in enumerate(self.scales[1:]):
             groups = self._build_groups(
                 current_rows, current_cols, target_rows, target_cols
             )
@@ -330,6 +333,8 @@ class MultiScaleFeatureAggregator(nn.Module):
                 macro_features.append(macro)
 
             current = torch.stack(macro_features, dim=1)
+            if coarse_context_processors is not None:
+                current = coarse_context_processors[scale_index](current)
             current_rows, current_cols = target_rows, target_cols
             scale_tokens.append(current.sum(dim=1))
 

@@ -11,7 +11,11 @@ from typing import Optional, Tuple, List, Dict, Any
 import torchvision.models as models
 
 # Import other modules
-from .neighborhood import NeighborhoodSystem, generate_adjacency_index_matrix
+from .neighborhood import (
+    DirectionalNeighborhood,
+    NeighborhoodSystem,
+    generate_adjacency_index_matrix,
+)
 from .context_kernel import ContextAwareKernelMap
 from .multi_order import MultiOrderContextAggregator
 from .random_walk import RandomWalkAttention
@@ -214,6 +218,42 @@ class MultiLabelClassifier(nn.Module):
         return logits
 
 
+class ScaleContextBlock(nn.Module):
+    """Apply multi-order context to one coarser cell grid."""
+
+    def __init__(self, rows, cols, feature_dim, config, directions):
+        super().__init__()
+        self.neighborhood = NeighborhoodSystem(rows, cols, directions=directions)
+        self.context_kernel = ContextAwareKernelMap(
+            feature_dim=feature_dim,
+            kernel_dim=feature_dim,
+            alpha=config.alpha,
+            beta=config.beta,
+            num_directions=config.num_directions,
+            num_layers=config.context_layers,
+            num_nodes=rows * cols,
+        )
+        self.random_walk = RandomWalkAttention(
+            feature_dim=feature_dim,
+            num_heads=config.attention_heads,
+            dropout=config.attention_dropout,
+            threshold=config.random_walk_threshold,
+            max_order=config.max_order,
+            num_directions=config.num_directions,
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(feature_dim * 2, feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, features):
+        adjacency = self.neighborhood.adjacency_matrices
+        _, mapped = self.context_kernel(features, adjacency)
+        learned_adjacency = self.context_kernel.get_adjacency_matrices(adjacency)
+        walked = self.random_walk(mapped, mapped, learned_adjacency)
+        return self.fusion(torch.cat((mapped, walked), dim=-1))
+
+
 class MultiScaleContextAwareNetwork(nn.Module):
     """Multi-scale context-aware network"""
     
@@ -242,9 +282,11 @@ class MultiScaleContextAwareNetwork(nn.Module):
         else:
             self.feature_dim = config.network.backbone_feature_dim
         
+        directions = DirectionalNeighborhood(config.network.num_directions).directions
         self.neighborhood_system = NeighborhoodSystem(
             rows=config.network.grid_rows,
-            cols=config.network.grid_cols
+            cols=config.network.grid_cols,
+            directions=directions,
         ).to(self.device)
         
         self.context_kernel = ContextAwareKernelMap(
@@ -289,6 +331,17 @@ class MultiScaleContextAwareNetwork(nn.Module):
             gamma=config.network.alpha / config.network.beta,
             use_explicit_map=True
         ).to(self.device)
+
+        self.coarse_scale_context = nn.ModuleList([
+            ScaleContextBlock(
+                rows=rows,
+                cols=cols,
+                feature_dim=self.feature_dim * 2,
+                config=config.network,
+                directions=directions,
+            )
+            for rows, cols in config.network.scales[1:]
+        ]).to(self.device)
         
         self.multi_scale_fusion = nn.Sequential(
             nn.Linear(config.network.final_feature_dim, config.network.final_feature_dim // 2),
@@ -411,7 +464,8 @@ class MultiScaleContextAwareNetwork(nn.Module):
 
         fused_features = self.multi_scale_aggregator(
             deep_kernel_features,
-            (self.config.network.grid_rows, self.config.network.grid_cols)
+            (self.config.network.grid_rows, self.config.network.grid_cols),
+            coarse_context_processors=self.coarse_scale_context,
         )
         
         fused_features = self.multi_scale_fusion(fused_features)
