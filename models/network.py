@@ -101,6 +101,74 @@ class FeatureExtractor(nn.Module):
         return self.backbone(x)
 
 
+class RotatedGridPositionFeatures(nn.Module):
+    """Inject 2D rotary positional features into grid-cell descriptors.
+
+    The paper specifies rotated positional features but does not define their
+    frequency schedule. This uses the standard fixed RoPE base while keeping
+    the backbone feature dimension unchanged.
+    """
+
+    def __init__(self, rows: int, cols: int, feature_dim: int, base: float = 10000.0):
+        super().__init__()
+        if rows < 1 or cols < 1:
+            raise ValueError("grid dimensions must be positive")
+        if feature_dim < 4 or feature_dim % 4:
+            raise ValueError("feature_dim must be divisible by four for 2D rotation")
+
+        pair_dim = feature_dim // 4
+        inverse_frequency = 1.0 / (
+            base ** (torch.arange(pair_dim, dtype=torch.float32) / pair_dim)
+        )
+        row_index = torch.arange(rows, dtype=torch.float32).repeat_interleave(cols)
+        col_index = torch.arange(cols, dtype=torch.float32).repeat(rows)
+        row_angles = row_index[:, None] * inverse_frequency[None, :]
+        col_angles = col_index[:, None] * inverse_frequency[None, :]
+
+        self.rows = rows
+        self.cols = cols
+        self.feature_dim = feature_dim
+        self.register_buffer("row_cos", row_angles.cos())
+        self.register_buffer("row_sin", row_angles.sin())
+        self.register_buffer("col_cos", col_angles.cos())
+        self.register_buffer("col_sin", col_angles.sin())
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        if features.dim() != 3 or features.size(1) != self.rows * self.cols:
+            raise ValueError(
+                f"expected [batch, {self.rows * self.cols}, features] grid input"
+            )
+        if features.size(-1) != self.feature_dim:
+            raise ValueError(
+                f"expected feature dimension {self.feature_dim}, got {features.size(-1)}"
+            )
+
+        pair_dim = self.feature_dim // 4
+        row_features = features[..., :2 * pair_dim].reshape(
+            features.size(0), features.size(1), pair_dim, 2
+        )
+        col_features = features[..., 2 * pair_dim:].reshape(
+            features.size(0), features.size(1), pair_dim, 2
+        )
+
+        row_features = self._rotate(
+            row_features,
+            self.row_cos.to(device=features.device, dtype=features.dtype),
+            self.row_sin.to(device=features.device, dtype=features.dtype),
+        )
+        col_features = self._rotate(
+            col_features,
+            self.col_cos.to(device=features.device, dtype=features.dtype),
+            self.col_sin.to(device=features.device, dtype=features.dtype),
+        )
+        return torch.cat((row_features, col_features), dim=-1)
+
+    @staticmethod
+    def _rotate(features, cos, sin):
+        x, y = features.unbind(dim=-1)
+        return torch.stack((x * cos - y * sin, x * sin + y * cos), dim=-1).flatten(-2)
+
+
 class BackboneFactory:
     """Backbone network factory"""
     
@@ -302,6 +370,12 @@ class MultiScaleContextAwareNetwork(nn.Module):
             self.feature_dim = backbone.feature_dim
         else:
             self.feature_dim = config.network.backbone_feature_dim
+
+        self.rotated_position = RotatedGridPositionFeatures(
+            rows=config.network.grid_rows,
+            cols=config.network.grid_cols,
+            feature_dim=self.feature_dim,
+        ).to(self.device)
         
         directions = DirectionalNeighborhood(config.network.num_directions).directions
         self.neighborhood_system = NeighborhoodSystem(
@@ -457,7 +531,8 @@ class MultiScaleContextAwareNetwork(nn.Module):
         features = self.backbone(x)
         
         grid_features = self.extract_grid_features(features)
-        
+        grid_features = self.rotated_position(grid_features)
+
         grid_features = grid_features.permute(0, 2, 1)
         grid_features = self.batch_norm(grid_features)
         grid_features = grid_features.permute(0, 2, 1)
