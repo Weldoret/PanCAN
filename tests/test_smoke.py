@@ -45,12 +45,17 @@ class EndToEndSmokeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
         model.eval()
+        deep_kernel_inputs = []
+        model.deep_kernel_network.register_forward_pre_hook(
+            lambda _module, inputs: deep_kernel_inputs.append(inputs[0].shape)
+        )
 
         with torch.no_grad():
             logits = model(torch.randn(2, 3, 8, 8))
 
         self.assertEqual(logits.shape, (2, 3))
         self.assertTrue(torch.isfinite(logits).all())
+        self.assertEqual(deep_kernel_inputs, [torch.Size((2, 4, 8))])
 
 
 if __name__ == "__main__":

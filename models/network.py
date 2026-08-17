@@ -402,20 +402,17 @@ class MultiScaleContextAwareNetwork(nn.Module):
             learned_adjacency_matrices
         )
         
-        multi_scale_features = self.multi_scale_aggregator(
-            random_walk_features,
-            (self.config.network.grid_rows, self.config.network.grid_cols)
-        )
-        
+        # Keep the lattice intact while applying the learned kernel mapping;
+        # pooling first would reduce the graph to a single identity node.
         deep_kernel_features = self.deep_kernel_network(
-            multi_scale_features,
+            random_walk_features,
             learned_adjacency_matrices
         )
-        
-        if len(deep_kernel_features.shape) == 3:
-            fused_features = torch.mean(deep_kernel_features, dim=1)
-        else:
-            fused_features = deep_kernel_features
+
+        fused_features = self.multi_scale_aggregator(
+            deep_kernel_features,
+            (self.config.network.grid_rows, self.config.network.grid_cols)
+        )
         
         fused_features = self.multi_scale_fusion(fused_features)
         
