@@ -177,7 +177,11 @@ class NeighborhoodSystem(nn.Module):
         self.num_nodes = rows * cols
         
         generator = AdjacencyMatrixGenerator(rows, cols, directions)
-        self.adjacency_matrices = generator.generate_adjacency_matrices()
+        self._adjacency_buffer_names = []
+        for direction_idx, matrix in enumerate(generator.generate_adjacency_matrices()):
+            name = f"adjacency_matrix_{direction_idx}"
+            self.register_buffer(name, matrix)
+            self._adjacency_buffer_names.append(name)
         self.index_matrix = generator.generate_adjacency_index_tensor()
         self.weight_matrix = generator.generate_weight_matrix(normalization='average')
         
@@ -186,6 +190,11 @@ class NeighborhoodSystem(nn.Module):
         
         self.directions = generator.directions
         self.num_directions = generator.num_directions
+
+    @property
+    def adjacency_matrices(self) -> List[torch.Tensor]:
+        """Return directional adjacency matrices on the module's current device."""
+        return [getattr(self, name) for name in self._adjacency_buffer_names]
     
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """

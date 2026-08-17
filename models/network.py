@@ -247,8 +247,6 @@ class MultiScaleContextAwareNetwork(nn.Module):
             cols=config.network.grid_cols
         ).to(self.device)
         
-        self.adjacency_matrices = self.neighborhood_system.adjacency_matrices
-        
         self.context_kernel = ContextAwareKernelMap(
             feature_dim=self.feature_dim,
             kernel_dim=self.feature_dim * 2,
@@ -311,6 +309,10 @@ class MultiScaleContextAwareNetwork(nn.Module):
         self.batch_norm = nn.BatchNorm1d(self.feature_dim).to(self.device)
         
         self._initialize_weights()
+
+    @property
+    def adjacency_matrices(self) -> List[torch.Tensor]:
+        return self.neighborhood_system.adjacency_matrices
     
     def _initialize_weights(self):
         """Initialize weights"""

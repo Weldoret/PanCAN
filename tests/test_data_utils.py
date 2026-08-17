@@ -5,10 +5,31 @@ from pathlib import Path
 import torch
 
 from config import DatasetConfig, ExperimentConfig, TrainingConfig
+from models.neighborhood import NeighborhoodSystem
 from utils import create_data_loaders, setup_experiment
 
 
 class DataUtilsTest(unittest.TestCase):
+    def test_adjacency_matrices_are_registered_buffers(self):
+        system = NeighborhoodSystem(2, 2)
+
+        self.assertEqual(
+            {matrix.device.type for matrix in system.adjacency_matrices},
+            {"cpu"},
+        )
+        self.assertEqual(
+            {
+                name for name in system.state_dict()
+                if name.startswith("adjacency_matrix_")
+            },
+            {f"adjacency_matrix_{index}" for index in range(4)},
+        )
+        system.to("meta")
+        self.assertEqual(
+            {matrix.device.type for matrix in system.adjacency_matrices},
+            {"meta"},
+        )
+
     def test_tensor_split_loaders_and_seed_setup(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
