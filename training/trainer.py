@@ -135,7 +135,7 @@ class LearningRateScheduler:
         elif scheduler_type == 'plateau':
             self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode='min', factor=factor, patience=patience,
-                min_lr=min_lr, verbose=verbose
+                min_lr=min_lr
             )
         elif scheduler_type == 'cosine':
             self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -307,12 +307,20 @@ class ModelCheckpoint:
         """
         should_save = False
         is_best = False
-        
+        monitor_key = next(
+            (
+                name
+                for name in metrics
+                if name.lower() == self.monitor.lower()
+            ),
+            None,
+        )
+
         if epoch % self.save_frequency == 0:
             should_save = True
-        
-        if self.monitor in metrics:
-            current_score = metrics[self.monitor]
+
+        if monitor_key is not None:
+            current_score = metrics[monitor_key]
             
             if self.compare(current_score, self.best_score):
                 self.best_score = current_score
@@ -330,7 +338,7 @@ class ModelCheckpoint:
                 model=model,
                 optimizer=optimizer,
                 scheduler=scheduler,
-                score=current_score if self.monitor in metrics else 0.0,
+                score=current_score if monitor_key is not None else 0.0,
                 config=config,
                 is_best=is_best,
                 additional_info=additional_info
@@ -404,7 +412,7 @@ class GradientAccumulator:
     
     def step(self, optimizer: optim.Optimizer, model: nn.Module):
         """
-        Perform gradient accumulation step
+        Record a batch and report whether an optimizer step is due.
         
         Args:
             optimizer: Optimizer
@@ -416,9 +424,6 @@ class GradientAccumulator:
         self.step_counter += 1
         
         if self.step_counter % self.accumulation_steps == 0:
-            optimizer.step()
-            optimizer.zero_grad()
-            
             self.step_counter = 0
             return True
         
@@ -613,6 +618,7 @@ class TrainingManager:
             Training metrics dictionary
         """
         self.model.train()
+        self.optimizer.zero_grad()
         
         epoch_loss = 0.0
         num_samples = 0
@@ -636,6 +642,7 @@ class TrainingManager:
             
             if self.gradient_accumulator.step(self.optimizer, self.model):
                 self.mixed_precision.step(self.optimizer)
+                self.optimizer.zero_grad()
             
             batch_size = inputs.size(0)
             epoch_loss += loss.item() * batch_size
@@ -649,9 +656,6 @@ class TrainingManager:
         avg_loss = epoch_loss / num_samples if num_samples > 0 else 0.0
         
         self.train_losses.append(avg_loss)
-        
-        if self.scheduler is not None:
-            self.scheduler.step()
         
         return {'train_loss': avg_loss}
     
@@ -699,9 +703,12 @@ class TrainingManager:
             self.current_epoch = epoch + 1
             
             train_metrics = self.train_epoch(train_loader)
-            
+
             val_metrics = self.validate(val_loader)
-            
+
+            if self.scheduler is not None:
+                self.scheduler.step(val_metrics.get('loss', train_metrics['train_loss']))
+
             metrics = {**train_metrics, **val_metrics}
             
             self.logger.info(f"Epoch {self.current_epoch}/{num_epochs}: {metrics}")
@@ -722,7 +729,14 @@ class TrainingManager:
             )
             
             if self.early_stopping is not None:
-                monitor_metric = metrics.get(self.config.training.monitor, 0.0)
+                monitor_metric = next(
+                    (
+                        value
+                        for name, value in metrics.items()
+                        if name.lower() == self.config.training.monitor.lower()
+                    ),
+                    0.0,
+                )
                 
                 if self.early_stopping(monitor_metric, self.current_epoch):
                     self.logger.info(f"Early stopping triggered at epoch {self.current_epoch}")

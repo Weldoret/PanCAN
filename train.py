@@ -142,7 +142,7 @@ def load_config(args):
     return config
 
 
-def create_experiment_directories(config, experiment_name):
+def create_experiment_directories(config, experiment_name, args=None):
     exp_root = os.path.join(config.training.save_dir, experiment_name)
 
     dirs = {
@@ -162,9 +162,10 @@ def create_experiment_directories(config, experiment_name):
     config_path = os.path.join(dirs['configs'], 'config.yaml')
     config.save(config_path)
     
-    args_path = os.path.join(dirs['configs'], 'args.json')
-    with open(args_path, 'w') as f:
-        json.dump(vars(args), f, indent=2)
+    if args is not None:
+        args_path = os.path.join(dirs['configs'], 'args.json')
+        with open(args_path, 'w') as f:
+            json.dump(vars(args), f, indent=2)
     
     print(f"Experiment directory created at: {exp_root}")
     print(f"Configuration saved to: {config_path}")
@@ -277,12 +278,14 @@ def train_model(model, train_loader, val_loader, config, experiment_dirs, device
     return training_results, trainer
 
 
-def evaluate_model(model, test_loader, trainer, experiment_dirs, device):
+def evaluate_model(model, test_loader, trainer, experiment_dirs, device, config=None):
     print("Evaluating model...")
     
     if trainer is not None:
         evaluator = trainer.evaluator
     else:
+        if config is None:
+            raise ValueError("config is required when evaluating without a trainer")
         evaluator = create_evaluator(config)
     
     # Evaluate on the test set
@@ -326,7 +329,7 @@ def main():
     
     # Set up experiment environment
     experiment_setup = setup_experiment(config, experiment_name)
-    experiment_dirs = create_experiment_directories(config, experiment_name)
+    experiment_dirs = create_experiment_directories(config, experiment_name, args)
     
     # Set device
     device = torch.device(config.training.device)
@@ -367,7 +370,9 @@ def main():
             print(f"Loaded model from epoch {checkpoint_info.get('epoch', 'unknown')}")
         
         # Evaluate model
-        test_results = evaluate_model(model, test_loader, None, experiment_dirs, device)
+        test_results = evaluate_model(
+            model, test_loader, None, experiment_dirs, device, config=config
+        )
     else:
         # Training mode
         # Train model
@@ -410,6 +415,11 @@ def main():
     print(f"  Experiment directory: {experiment_dirs['root']}")
     print("="*60)
     
+    summary = {
+        'config': config.to_dict() if hasattr(config, 'to_dict') else config,
+        'test_metrics': test_results['metrics'],
+        'test_num_samples': test_results['num_samples'],
+    }
     summary_path = os.path.join(experiment_dirs['results'], 'experiment_summary.json')
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)

@@ -405,9 +405,10 @@ class Evaluator:
                     total_loss += loss.item() * inputs.size(0)
                 
                 scores = torch.sigmoid(outputs)
-                
+
                 if self.metrics_calculator.top_k is not None:
-                    _, top_indices = scores.topk(self.metrics_calculator.top_k, dim=1)
+                    k = min(self.metrics_calculator.top_k, scores.size(1))
+                    _, top_indices = scores.topk(k, dim=1)
                     predictions = torch.zeros_like(scores).scatter_(1, top_indices, 1)
                 else:
                     predictions = (scores > self.metrics_calculator.threshold).float()
