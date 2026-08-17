@@ -427,9 +427,19 @@ class RandomWalkAttention(nn.Module):
             probabilities = calculator(center, neighbor_attention)
 
             if self.use_threshold:
-                probabilities = probabilities * (
+                masked_probabilities = probabilities * (
                     probabilities > self.threshold
                 ).to(probabilities.dtype)
+                normalizer = masked_probabilities.sum(dim=-1, keepdim=True)
+                fallback = F.one_hot(
+                    probabilities.argmax(dim=-1),
+                    num_classes=probabilities.size(-1),
+                ).to(dtype=probabilities.dtype)
+                probabilities = torch.where(
+                    normalizer > 1e-8,
+                    masked_probabilities / normalizer.clamp_min(1e-8),
+                    fallback,
+                )
 
             values = value_projection(value_features[:, neighbors, :])
             aggregated[:, node_idx, :] = torch.bmm(

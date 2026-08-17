@@ -1,4 +1,5 @@
 import unittest
+import math
 
 import torch
 
@@ -6,6 +7,70 @@ from models.random_walk import RandomWalkAttention
 
 
 class RandomWalkAttentionTest(unittest.TestCase):
+    def test_thresholded_probabilities_are_renormalized(self):
+        attention_features = torch.tensor(
+            [[[math.sqrt(2.0), 0.0], [math.log(4.0), 0.0], [0.0, 0.0]]]
+        )
+        value_features = torch.tensor(
+            [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
+        )
+        module = RandomWalkAttention(
+            feature_dim=2,
+            dropout=0.0,
+            threshold=0.6,
+            max_order=1,
+            num_directions=1,
+        )
+
+        with torch.no_grad():
+            transition = module.transition_calculators[0]
+            transition.query_proj.weight.copy_(torch.eye(2))
+            transition.query_proj.bias.zero_()
+            transition.key_proj.weight.copy_(torch.eye(2))
+            transition.key_proj.bias.zero_()
+            module.value_projections[0].weight.copy_(torch.eye(2))
+            module.value_projections[0].bias.zero_()
+
+        aggregated = module._aggregate_order(
+            attention_features,
+            value_features,
+            [[1, 2], [], []],
+            order=1,
+        )
+
+        self.assertTrue(torch.allclose(aggregated[0, 0], value_features[0, 1]))
+
+    def test_threshold_falls_back_to_most_likely_neighbor(self):
+        attention_features = torch.zeros(1, 3, 2)
+        value_features = torch.tensor(
+            [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
+        )
+        module = RandomWalkAttention(
+            feature_dim=2,
+            dropout=0.0,
+            threshold=0.6,
+            max_order=1,
+            num_directions=1,
+        )
+
+        with torch.no_grad():
+            transition = module.transition_calculators[0]
+            transition.query_proj.weight.copy_(torch.eye(2))
+            transition.query_proj.bias.zero_()
+            transition.key_proj.weight.copy_(torch.eye(2))
+            transition.key_proj.bias.zero_()
+            module.value_projections[0].weight.copy_(torch.eye(2))
+            module.value_projections[0].bias.zero_()
+
+        aggregated = module._aggregate_order(
+            attention_features,
+            value_features,
+            [[1, 2], [], []],
+            order=1,
+        )
+
+        self.assertTrue(torch.allclose(aggregated[0, 0], value_features[0, 1]))
+
     def test_accepts_dense_directional_adjacency_and_backpropagates(self):
         features = torch.randn(2, 4, 16, requires_grad=True)
         adjacency = [
