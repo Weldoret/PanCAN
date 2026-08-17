@@ -353,9 +353,15 @@ class Evaluator:
             config: Configuration object
         """
         self.config = config
+        dataset = getattr(config, 'dataset', None)
+        self.dataset_name = getattr(dataset, 'dataset_name', '')
         self.metrics_calculator = MultiLabelMetrics(
             threshold=0.5,
-            top_k=3  # Using top-3 evaluation as in the paper
+            top_k=None
+        )
+        self.top3_metrics_calculator = MultiLabelMetrics(
+            threshold=0.5,
+            top_k=None
         )
         self.performance_metrics = PerformanceMetrics()
         self.device = torch.device(config.training.device if hasattr(config, 'training') else 'cuda')
@@ -406,12 +412,7 @@ class Evaluator:
                 
                 scores = torch.sigmoid(outputs)
 
-                if self.metrics_calculator.top_k is not None:
-                    k = min(self.metrics_calculator.top_k, scores.size(1))
-                    _, top_indices = scores.topk(k, dim=1)
-                    predictions = torch.zeros_like(scores).scatter_(1, top_indices, 1)
-                else:
-                    predictions = (scores > self.metrics_calculator.threshold).float()
+                predictions = (scores > self.metrics_calculator.threshold).float()
                 
                 all_predictions.append(predictions.cpu().numpy())
                 all_labels.append(labels.cpu().numpy())
@@ -433,6 +434,17 @@ class Evaluator:
         
         ml_metrics = self.metrics_calculator.compute_all(all_labels, all_predictions, all_scores)
         metrics.update(ml_metrics)
+
+        if self.dataset_name == 'coco':
+            metrics.update({f'all_{name}': value for name, value in ml_metrics.items()})
+
+            top3_predictions = self.top3_metrics_calculator.get_topk_predictions(
+                all_scores, 3
+            )
+            top3_metrics = self.top3_metrics_calculator.compute_all(
+                all_labels, top3_predictions, all_scores
+            )
+            metrics.update({f'top3_{name}': value for name, value in top3_metrics.items()})
         
         confusion_matrix.update(all_labels, all_predictions)
         confusion_metrics = confusion_matrix.get_overall_metrics()
