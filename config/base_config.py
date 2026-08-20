@@ -164,15 +164,32 @@ class NetworkConfig(ConfigMixin):
 class DatasetConfig(ConfigMixin):
     dataset_name: str = "nuswide"
     data_root: str = "./data"
-    batch_size: int = 128
+    batch_size: int = 6
     num_workers: int = 4
     num_classes: int = 81
+    image_size: tuple[int, int] = (400, 500)
+    use_augmentation: bool = True
+    randaugment_num_ops: int = 2
+    randaugment_magnitude: int = 9
+    cutout_size: int = 16
 
     def __post_init__(self) -> None:
         if self.dataset_name not in {"nuswide", "voc2007", "coco"}:
             raise ValueError(f"Unsupported dataset: {self.dataset_name}")
         if self.batch_size < 1 or self.num_workers < 0:
             raise ValueError("batch_size must be positive and num_workers cannot be negative")
+        try:
+            self.image_size = tuple(self.image_size)
+        except TypeError as exc:
+            raise ValueError("image_size must contain height and width") from exc
+        if len(self.image_size) != 2 or any(
+            not isinstance(value, int) or value < 1 for value in self.image_size
+        ):
+            raise ValueError("image_size must contain positive integer dimensions")
+        if self.randaugment_num_ops < 0 or not 0 <= self.randaugment_magnitude <= 30:
+            raise ValueError("invalid RandAugment settings")
+        if self.cutout_size < 0:
+            raise ValueError("cutout_size cannot be negative")
 
 
 @dataclass
@@ -206,6 +223,7 @@ class TrainingConfig(ConfigMixin):
     asymmetric_gamma_neg: float = 4.0
     asymmetric_gamma_pos: float = 1.0
     group_l2: float = 1e-4
+    ema_decay: float = 0.9997
 
     def __post_init__(self) -> None:
         if self.num_epochs < 1 or self.learning_rate <= 0:
@@ -216,6 +234,8 @@ class TrainingConfig(ConfigMixin):
             raise ValueError("accumulation_steps and save_frequency must be positive")
         if self.group_l2 < 0:
             raise ValueError("group_l2 must be non-negative")
+        if not 0 <= self.ema_decay < 1:
+            raise ValueError("ema_decay must be in [0, 1)")
 
 
 @dataclass

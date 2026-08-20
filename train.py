@@ -47,8 +47,8 @@ def parse_args():
     # Training parameters
     parser.add_argument('--epochs', type=int, default=200,
                        help='Number of training epochs (default: 200)')
-    parser.add_argument('--batch_size', type=int, default=128,
-                       help='Batch size (default: 128)')
+    parser.add_argument('--batch_size', type=int, default=6,
+                       help='Batch size (default: 6)')
     parser.add_argument('--lr', type=float, default=0.0001,
                        help='Learning rate (default: 0.0001)')
     parser.add_argument('--weight_decay', type=float, default=0.0001,
@@ -56,6 +56,20 @@ def parse_args():
     parser.add_argument('--optimizer', type=str, default='adamw',
                        choices=['adam', 'adamw', 'sgd'],
                        help='Optimizer (default: adamw)')
+    parser.add_argument('--ema_decay', type=float, default=0.9997,
+                       help='Exponential moving average decay (default: 0.9997)')
+    parser.add_argument('--image_height', type=int, default=400,
+                       help='Image height for preprocessing (default: 400)')
+    parser.add_argument('--image_width', type=int, default=500,
+                       help='Image width for preprocessing (default: 500)')
+    parser.add_argument('--randaugment_num_ops', type=int, default=2,
+                       help='Number of RandAugment operations (default: 2)')
+    parser.add_argument('--randaugment_magnitude', type=int, default=9,
+                       help='RandAugment magnitude (default: 9)')
+    parser.add_argument('--cutout_size', type=int, default=16,
+                       help='Cutout side length in pixels (default: 16)')
+    parser.add_argument('--no_augmentation', action='store_true',
+                       help='Disable training-image augmentation')
     
     # Experiment settings
     parser.add_argument('--experiment_name', type=str, default=None,
@@ -123,7 +137,12 @@ def load_config(args):
             dataset_name=args.dataset,
             data_root=args.data_root,
             batch_size=args.batch_size,
-            num_workers=args.num_workers
+            num_workers=args.num_workers,
+            image_size=(args.image_height, args.image_width),
+            use_augmentation=not args.no_augmentation,
+            randaugment_num_ops=args.randaugment_num_ops,
+            randaugment_magnitude=args.randaugment_magnitude,
+            cutout_size=args.cutout_size,
         )
         
         # Create training configuration
@@ -132,6 +151,7 @@ def load_config(args):
             learning_rate=args.lr,
             weight_decay=args.weight_decay,
             optimizer=args.optimizer,
+            ema_decay=args.ema_decay,
             device=args.device if args.device else ('cuda' if torch.cuda.is_available() else 'cpu'),
             seed=args.seed,
             save_dir=args.save_dir,
