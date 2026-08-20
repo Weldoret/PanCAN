@@ -253,14 +253,7 @@ def resume_training(model, checkpoint_path, device, trainer):
     print(f"Resuming training from checkpoint: {checkpoint_path}")
     
     # Load checkpoint
-    checkpoint_manager = CheckpointManager(save_dir=os.path.dirname(checkpoint_path))
-    checkpoint_info = checkpoint_manager.load_checkpoint(
-        model=model,
-        checkpoint_path=checkpoint_path,
-        device=device,
-        optimizer=trainer.optimizer,
-        scheduler=trainer.scheduler
-    )
+    checkpoint_info = trainer.load_checkpoint(checkpoint_path)
     
     # Restore training state
     if 'epoch' in checkpoint_info:
@@ -317,11 +310,14 @@ def evaluate_model(model, test_loader, trainer, experiment_dirs, device, config=
         evaluator = create_evaluator(config)
     
     # Evaluate on the test set
-    test_results = evaluator.evaluate(
-        model=model,
-        dataloader=test_loader,
-        mode='test'
-    )
+    if trainer is not None:
+        test_results = trainer.evaluate(test_loader, mode='test')
+    else:
+        test_results = evaluator.evaluate(
+            model=model,
+            dataloader=test_loader,
+            mode='test'
+        )
     
     # Save test results
     test_results_path = os.path.join(experiment_dirs['results'], 'test_results.json')
@@ -410,6 +406,8 @@ def main():
                 checkpoint_path=args.resume,
                 device=device
             )
+            if 'ema_state_dict' in checkpoint_info:
+                model.load_state_dict(checkpoint_info['ema_state_dict']['shadow'])
             print(f"Loaded model from epoch {checkpoint_info.get('epoch', 'unknown')}")
         
         # Evaluate model

@@ -16,6 +16,7 @@ import os
 import warnings
 from datetime import datetime
 import json
+from contextlib import contextmanager
 
 from .evaluator import Evaluator, PerformanceMetrics
 from .losses import GroupedMultiLabelLoss
@@ -485,6 +486,75 @@ class MixedPrecisionTrainer:
             self.scaler.load_state_dict(state_dict)
 
 
+class ExponentialMovingAverage:
+    """Maintain an exponential moving average of model state."""
+
+    def __init__(self, model: nn.Module, decay: float = 0.9997):
+        if not 0 <= decay < 1:
+            raise ValueError("ema decay must be in [0, 1)")
+        self.decay = decay
+        self.shadow = {
+            name: value.detach().clone()
+            for name, value in model.state_dict().items()
+        }
+        self.backup = None
+
+    def update(self, model: nn.Module) -> None:
+        """Update the moving average from the current model state."""
+        for name, value in model.state_dict().items():
+            if torch.is_floating_point(value):
+                self.shadow[name].mul_(self.decay).add_(
+                    value.detach(), alpha=1.0 - self.decay
+                )
+            else:
+                self.shadow[name] = value.detach().clone()
+
+    def state_dict(self) -> Dict[str, Any]:
+        return {
+            "decay": self.decay,
+            "shadow": {
+                name: value.detach().clone()
+                for name, value in self.shadow.items()
+            },
+        }
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        if not state_dict:
+            return
+        decay = state_dict.get("decay", self.decay)
+        if not 0 <= decay < 1:
+            raise ValueError("ema decay must be in [0, 1)")
+        shadow = state_dict.get("shadow", state_dict)
+        self.decay = decay
+        self.shadow = {
+            name: value.detach().clone()
+            for name, value in shadow.items()
+        }
+
+    def apply_to(self, model: nn.Module) -> None:
+        """Replace model state with the moving average until restored."""
+        self.backup = {
+            name: value.detach().clone()
+            for name, value in model.state_dict().items()
+        }
+        model.load_state_dict(self.shadow)
+
+    def restore(self, model: nn.Module) -> None:
+        """Restore the state captured by ``apply_to``."""
+        if self.backup is None:
+            raise RuntimeError("EMA state was not applied")
+        model.load_state_dict(self.backup)
+        self.backup = None
+
+    @contextmanager
+    def average_parameters(self, model: nn.Module):
+        self.apply_to(model)
+        try:
+            yield
+        finally:
+            self.restore(model)
+
+
 class TrainingManager:
     """Training manager"""
     
@@ -505,9 +575,13 @@ class TrainingManager:
         self.device = device if device else torch.device(
             config.training.device if hasattr(config, 'training') else 'cuda'
         )
-        
+
         self.model.to(self.device)
-        
+        self.ema = ExponentialMovingAverage(
+            self.model,
+            decay=config.training.ema_decay,
+        )
+
         self.optimizer = self._create_optimizer()
         
         self.criterion = self._create_criterion()
@@ -657,6 +731,7 @@ class TrainingManager:
             
             if self.gradient_accumulator.step(self.optimizer, self.model):
                 self.mixed_precision.step(self.optimizer)
+                self.ema.update(self.model)
                 self.optimizer.zero_grad()
             
             batch_size = inputs.size(0)
@@ -685,14 +760,19 @@ class TrainingManager:
         Returns:
             Validation metrics dictionary
         """
-        results = self.evaluator.evaluate(
-            model=self.model,
-            dataloader=val_loader,
-            criterion=self.criterion,
-            mode='val'
-        )
-        
+        results = self.evaluate(val_loader, mode='val')
+
         return results['metrics']
+
+    def evaluate(self, dataloader, mode='val') -> Dict[str, Any]:
+        """Evaluate using the exponential moving-average model state."""
+        with self.ema.average_parameters(self.model):
+            return self.evaluator.evaluate(
+                model=self.model,
+                dataloader=dataloader,
+                criterion=self.criterion,
+                mode=mode,
+            )
     
     def train(self,
              train_loader: torch.utils.data.DataLoader,
@@ -739,7 +819,8 @@ class TrainingManager:
                 config=config_dict,
                 additional_info={
                     'train_losses': self.train_losses,
-                    'val_metrics': self.evaluator.performance_metrics.metrics
+                    'val_metrics': self.evaluator.performance_metrics.metrics,
+                    'ema_state_dict': self.ema.state_dict(),
                 }
             )
             
@@ -762,6 +843,8 @@ class TrainingManager:
         if self.checkpoint.checkpoint_history:
             self.logger.info("Loading best model")
             checkpoint_info = self.checkpoint.load_best(self.model, self.device)
+            if 'ema_state_dict' in checkpoint_info:
+                self.ema.load_state_dict(checkpoint_info['ema_state_dict'])
             self.best_score = checkpoint_info.get('score')
             self.best_epoch = checkpoint_info.get('epoch', -1)
         
@@ -786,12 +869,7 @@ class TrainingManager:
         """
         self.logger.info("Testing model")
         
-        results = self.evaluator.evaluate(
-            model=self.model,
-            dataloader=test_loader,
-            criterion=self.criterion,
-            mode='test'
-        )
+        results = self.evaluate(test_loader, mode='test')
         
         self.logger.info(f"Test results: {results['metrics']}")
         
@@ -823,7 +901,16 @@ class TrainingManager:
         Returns:
             Checkpoint information
         """
-        return load_checkpoint(self.model, checkpoint_path, self.device)
+        checkpoint = load_checkpoint(
+            self.model,
+            checkpoint_path,
+            self.device,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+        )
+        if 'ema_state_dict' in checkpoint:
+            self.ema.load_state_dict(checkpoint['ema_state_dict'])
+        return checkpoint
     
     def get_lr(self) -> float:
         """
