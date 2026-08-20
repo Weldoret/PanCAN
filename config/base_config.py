@@ -73,7 +73,7 @@ class NetworkConfig(ConfigMixin):
     random_walk_threshold: float = 0.71
     scales: list[tuple[int, int]] | None = None
     anchor_sizes: list[tuple[int, int]] = field(default_factory=lambda: [(2, 2), (3, 3)])
-    sliding_window_stride: int = 1
+    sliding_window_stride: int | tuple[int, int] = 2
     kernel_feature_dims: list[int] | None = None
     final_feature_dim: int | None = None
     classifier_dropout: float = 0.5
@@ -107,6 +107,22 @@ class NetworkConfig(ConfigMixin):
             raise ValueError("attention_heads must be positive")
         if self.num_groups < 1:
             raise ValueError("num_groups must be positive")
+
+        stride = self.sliding_window_stride
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        else:
+            try:
+                stride = tuple(stride)
+            except TypeError as exc:
+                raise ValueError(
+                    "sliding_window_stride must be an int or a pair of ints"
+                ) from exc
+            if len(stride) != 2:
+                raise ValueError("sliding_window_stride must contain two values")
+        if any(not isinstance(value, int) or value < 1 for value in stride):
+            raise ValueError("sliding_window_stride values must be positive integers")
+        self.sliding_window_stride = stride
 
         if self.backbone_feature_dim is None:
             self.backbone_feature_dim = self.FEATURE_DIMS.get(self.backbone_name, 2048)

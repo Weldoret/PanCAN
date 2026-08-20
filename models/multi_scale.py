@@ -253,16 +253,18 @@ class MultiScaleFeatureAggregator(nn.Module):
                  num_heads: int = 8,
                  dropout: float = 0.1,
                  attention_heads: Optional[int] = None,
-                 stride: Optional[int] = None):
+                 stride: Optional[int | Tuple[int, int]] = None):
         super().__init__()
         if attention_heads is not None:
             num_heads = attention_heads
 
         self.feature_dim = feature_dim
         self.scales = scales
+        # Retained for configuration compatibility; CSCAMN membership is
+        # determined by the scale transition and its overlap stride.
         self.anchor_sizes = anchor_sizes
         self.top_k = top_k
-        self.stride = stride
+        self.stride = self._normalize_stride(stride)
 
         if not scales:
             raise ValueError("scales must contain at least one grid")
@@ -305,7 +307,11 @@ class MultiScaleFeatureAggregator(nn.Module):
 
         for scale_index, (target_rows, target_cols) in enumerate(self.scales[1:]):
             groups = self._build_groups(
-                current_rows, current_cols, target_rows, target_cols
+                current_rows,
+                current_cols,
+                target_rows,
+                target_cols,
+                stride=self.stride,
             )
             anchor_indices = self._select_anchor_indices(
                 current, groups, current_rows, current_cols
@@ -351,24 +357,82 @@ class MultiScaleFeatureAggregator(nn.Module):
         current_cols: int,
         target_rows: int,
         target_cols: int,
+        stride: int | Tuple[int, int] = 2,
     ) -> List[List[int]]:
-        """Map each coarser macro-cell to overlapping finer-scale cells."""
+        """Build stride-aware overlapping groups for one scale transition.
+
+        PanCAN defines the coarser grid by overlap strides and reports a 2x2
+        scale interval. The paper does not spell out boundary padding or an
+        exact window size, so this uses the smallest window that both starts
+        from the configured stride and guarantees overlap plus full coverage.
+        The requested target grid remains authoritative for non-divisible
+        transitions such as 5 -> 3.
+        """
+        if (
+            current_rows < 1
+            or current_cols < 1
+            or target_rows < 1
+            or target_cols < 1
+        ):
+            raise ValueError("grid dimensions must be positive")
         if target_rows > current_rows or target_cols > current_cols:
             raise ValueError("scales must progress from fine to coarse")
 
+        row_stride, col_stride = MultiScaleFeatureAggregator._normalize_stride(stride)
+        row_starts, row_window = MultiScaleFeatureAggregator._window_layout(
+            current_rows, target_rows, row_stride
+        )
+        col_starts, col_window = MultiScaleFeatureAggregator._window_layout(
+            current_cols, target_cols, col_stride
+        )
+
         groups = []
-        for row in range(target_rows):
-            row_start = (row * current_rows) // target_rows
-            row_end = math.ceil((row + 1) * current_rows / target_rows)
-            for col in range(target_cols):
-                col_start = (col * current_cols) // target_cols
-                col_end = math.ceil((col + 1) * current_cols / target_cols)
+        for row_start in row_starts:
+            for col_start in col_starts:
                 groups.append([
                     source_row * current_cols + source_col
-                    for source_row in range(row_start, row_end)
-                    for source_col in range(col_start, col_end)
+                    for source_row in range(row_start, row_start + row_window)
+                    for source_col in range(col_start, col_start + col_window)
                 ])
         return groups
+
+    @staticmethod
+    def _normalize_stride(
+        stride: Optional[int | Tuple[int, int]],
+    ) -> Tuple[int, int]:
+        if stride is None:
+            return 2, 2
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        else:
+            stride = tuple(stride)
+        if len(stride) != 2 or any(
+            not isinstance(value, int) or value < 1 for value in stride
+        ):
+            raise ValueError("stride must be a positive int or pair of ints")
+        return stride
+
+    @staticmethod
+    def _window_layout(length: int, count: int, stride: int) -> Tuple[List[int], int]:
+        if count < 1 or count > length:
+            raise ValueError("target grid must fit inside source grid")
+
+        # ponytail: infer only the missing window size; keep the paper's
+        # reported target hierarchy and use the smallest overlapping window.
+        minimum_overlap_window = (length + count - 1) // count
+        window = min(
+            length - count + 1,
+            max(stride + 1, minimum_overlap_window),
+        )
+        if count == 1:
+            return [0], window
+
+        max_start = length - window
+        starts = [
+            int(round(index * max_start / (count - 1)))
+            for index in range(count)
+        ]
+        return starts, window
 
     @staticmethod
     def _select_anchor_indices(
