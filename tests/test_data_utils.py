@@ -91,6 +91,7 @@ class DataUtilsTest(unittest.TestCase):
             self.assertEqual(set(loaders), {"train", "val", "test"})
             self.assertEqual(images.shape[1:], (3, 8, 8))
             self.assertEqual(labels.dtype, torch.float32)
+            self.assertEqual(loaders["train"].dataset.tensors[1].shape, (5, 4))
             self.assertEqual(setup["name"], "smoke")
 
 

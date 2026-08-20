@@ -80,6 +80,11 @@ class TensorSplitDataset(Dataset):
     def __len__(self):
         return len(self.labels)
 
+    @property
+    def tensors(self):
+        """Expose the TensorDataset-compatible backing tensors."""
+        return self.inputs, self.labels
+
     def __getitem__(self, index):
         image = self.inputs[index]
         if self.transform is not None:
