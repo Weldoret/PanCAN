@@ -34,7 +34,10 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         gram, with_context = module(features, identity_adjacency)
 
         self.assertTrue(torch.allclose(without_context, torch.zeros_like(features)))
-        self.assertTrue(torch.allclose(with_context, features * 0.5))
+        similarity = module.kernel_mapping.compute_kernel(features[0], features[0])
+        expected_kernel = similarity * 1.25  # K = S + 0.25 I K I
+        expected = 0.5 * (expected_kernel @ features[0]).unsqueeze(0)
+        self.assertTrue(torch.allclose(with_context, expected))
         self.assertEqual(gram.shape, (1, 2, 2))
 
         with_context.sum().backward()
@@ -113,6 +116,23 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(gradients).all())
         self.assertGreater(gradients[0, 0, 0, 1].abs(), 0)
         self.assertGreater(gradients[0, 0, 1, 2].abs(), 0)
+
+    def test_fixed_point_solver_accepts_batched_similarity_matrices(self):
+        from models.context_kernel import ContextAwareKernel
+
+        solver = ContextAwareKernel(
+            alpha=0.25,
+            beta=1.0,
+            num_directions=1,
+            max_iterations=1,
+        )
+        similarity = torch.eye(2).repeat(3, 1, 1)
+        adjacency = [torch.eye(2)]
+
+        optimized, _ = solver(similarity, adjacency)
+
+        self.assertEqual(optimized.shape, (3, 2, 2))
+        self.assertTrue(torch.allclose(optimized, similarity * 1.25))
 
 
 if __name__ == "__main__":

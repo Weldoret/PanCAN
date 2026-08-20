@@ -10,8 +10,8 @@ class FidelityCriterion(nn.Module):
         super().__init__()
     
     def forward(self, K: torch.Tensor, S: torch.Tensor) -> torch.Tensor:
-        loss = -torch.trace(K @ S.t())
-        return loss
+        product = K @ S.transpose(-1, -2)
+        return -torch.diagonal(product, dim1=-2, dim2=-1).sum(-1).mean()
 
 
 class ContextCriterion(nn.Module):
@@ -22,8 +22,9 @@ class ContextCriterion(nn.Module):
     def forward(self, K: torch.Tensor, P: List[torch.Tensor]) -> torch.Tensor:
         loss = 0.0
         for P_c in P:
-            term = torch.trace(K @ P_c @ K.t() @ P_c.t())
-            loss -= self.alpha * term
+            term = K @ P_c @ K.transpose(-1, -2) @ P_c.transpose(-1, -2)
+            trace = torch.diagonal(term, dim1=-2, dim2=-1).sum(-1).mean()
+            loss -= self.alpha * trace
         
         return loss
 
@@ -35,10 +36,8 @@ class KernelRegularizer(nn.Module):
         self.norm_type = norm_type
     
     def forward(self, K: torch.Tensor) -> torch.Tensor:
-        if self.norm_type == 'frobenius':
-            norm = torch.norm(K, p='fro')
-        elif self.norm_type == 'l2':
-            norm = torch.norm(K, p=2)
+        if self.norm_type in {'frobenius', 'l2'}:
+            norm = torch.linalg.vector_norm(K)
         else:
             raise ValueError(f"Unsupported norm type: {self.norm_type}")
         
@@ -77,17 +76,17 @@ class ContextAwareKernel(nn.Module):
         self._validate_inputs(S, P)
         
         K = S.clone()
-        
+
         for iteration in range(self.max_iterations):
             K_prev = K.clone()
-            
+
             context_term = torch.zeros_like(K)
             for P_c in P:
-                context_term += P_c @ K @ P_c.t()
-            
+                context_term += P_c @ K @ P_c.transpose(-1, -2)
+
             K = S + self.gamma * context_term
-            
-            delta = torch.norm(K - K_prev, p='fro').item()
+
+            delta = torch.linalg.vector_norm(K - K_prev).item()
             if delta < self.convergence_threshold:
                 break
         
@@ -126,11 +125,15 @@ class ContextAwareKernel(nn.Module):
     
     def _validate_inputs(self, S: torch.Tensor, P: List[torch.Tensor]):
         """Validate inputs"""
-        assert len(S.shape) == 2, "S must be a 2D matrix"
+        if S.dim() not in (2, 3):
+            raise ValueError("S must have shape [nodes, nodes] or [batch, nodes, nodes]")
         assert len(P) == self.num_directions, f"Expected {self.num_directions} adjacency matrices"
-        
+
         for i, P_c in enumerate(P):
-            assert P_c.shape == S.shape, f"P[{i}] shape {P_c.shape} doesn't match S shape {S.shape}"
+            expected_shape = S.shape[-2:]
+            assert P_c.shape == expected_shape, (
+                f"P[{i}] shape {P_c.shape} doesn't match S shape {expected_shape}"
+            )
 
 
 class KernelMappingLayer(nn.Module):
@@ -245,7 +248,8 @@ class ContextAwareKernelMap(nn.Module):
         self.context_kernel = ContextAwareKernel(
             alpha=alpha,
             beta=beta,
-            num_directions=num_directions
+            num_directions=num_directions,
+            max_iterations=num_layers,
         )
         self.mapping_layers = nn.ModuleList([
             nn.Conv1d(
@@ -299,6 +303,18 @@ class ContextAwareKernelMap(nn.Module):
             matrices.append(matrix)
 
         sqrt_gamma = self.context_kernel.gamma ** 0.5
+        similarity = self._compute_similarity_matrix(features)
+        optimized_kernel, _ = self.context_kernel(
+            similarity,
+            self._learned_adjacencies(matrices, 0),
+        )
+        # Eq. (2)'s optimized kernel acts on the initial map before the
+        # explicit Eq. (3) expansion continues through the learned layers.
+        kernel_features = torch.bmm(
+            optimized_kernel.to(dtype=initial_features.dtype),
+            initial_features,
+        )
+
         for layer_index, layer in enumerate(self.mapping_layers):
             layer_matrices = self._learned_adjacencies(matrices, layer_index)
             directional_features = [
@@ -358,13 +374,10 @@ class ContextAwareKernelMap(nn.Module):
         return learned
     
     def _compute_similarity_matrix(self, features: torch.Tensor) -> torch.Tensor:
-        batch_size, num_nodes, feature_dim = features.shape
-        
-        sample_features = features[0]
-        
-        S = self.kernel_mapping.compute_kernel(sample_features, sample_features)
-        
-        return S
+        return torch.stack([
+            self.kernel_mapping.compute_kernel(sample, sample)
+            for sample in features
+        ])
     
     def compute_image_kernel(self,
                            image1_features: torch.Tensor,
