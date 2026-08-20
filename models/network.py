@@ -20,7 +20,6 @@ from .context_kernel import ContextAwareKernelMap
 from .multi_order import MultiOrderContextAggregator
 from .random_walk import RandomWalkAttention
 from .multi_scale import MultiScaleFeatureAggregator, CenteredSelfAttention
-from .deep_kernel import DeepKernelMappingNetwork, ExplicitKernelMap
 
 
 class FeatureExtractor(nn.Module):
@@ -419,14 +418,6 @@ class MultiScaleContextAwareNetwork(nn.Module):
             stride=config.network.sliding_window_stride
         ).to(self.device)
         
-        self.deep_kernel_network = DeepKernelMappingNetwork(
-            input_dim=self.feature_dim * 2,
-            hidden_dims=config.network.kernel_feature_dims,
-            num_directions=config.network.num_directions,
-            gamma=config.network.alpha / config.network.beta,
-            use_explicit_map=True
-        ).to(self.device)
-
         self.coarse_scale_context = nn.ModuleList([
             ScaleContextBlock(
                 rows=rows,
@@ -554,15 +545,8 @@ class MultiScaleContextAwareNetwork(nn.Module):
             learned_adjacency_matrices
         )
         
-        # Keep the lattice intact while applying the learned kernel mapping;
-        # pooling first would reduce the graph to a single identity node.
-        deep_kernel_features = self.deep_kernel_network(
-            random_walk_features,
-            learned_adjacency_matrices
-        )
-
         fused_features = self.multi_scale_aggregator(
-            deep_kernel_features,
+            random_walk_features,
             (self.config.network.grid_rows, self.config.network.grid_cols),
             coarse_context_processors=self.coarse_scale_context,
         )

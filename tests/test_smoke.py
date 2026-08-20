@@ -74,9 +74,9 @@ class EndToEndSmokeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
         model.eval()
-        deep_kernel_inputs = []
-        model.deep_kernel_network.register_forward_pre_hook(
-            lambda _module, inputs: deep_kernel_inputs.append(inputs[0].shape)
+        scale_inputs = []
+        model.multi_scale_aggregator.register_forward_pre_hook(
+            lambda _module, inputs: scale_inputs.append(inputs[0].shape)
         )
         coarse_context_inputs = []
         model.coarse_scale_context[0].register_forward_pre_hook(
@@ -91,7 +91,8 @@ class EndToEndSmokeTest(unittest.TestCase):
 
         self.assertEqual(logits.shape, (2, 3))
         self.assertTrue(torch.isfinite(logits).all())
-        self.assertEqual(deep_kernel_inputs, [torch.Size((2, 4, 8))])
+        self.assertFalse(hasattr(model, "deep_kernel_network"))
+        self.assertEqual(scale_inputs, [torch.Size((2, 4, 8))])
         self.assertEqual(coarse_context_inputs, [torch.Size((2, 1, 8))])
 
 
