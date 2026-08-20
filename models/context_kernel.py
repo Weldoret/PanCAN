@@ -223,12 +223,17 @@ class ContextAwareKernelMap(nn.Module):
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be positive")
+        if alpha < 0:
+            raise ValueError("alpha must be non-negative")
+        if beta <= 0:
+            raise ValueError("beta must be positive")
 
         self.feature_dim = feature_dim
         self.kernel_dim = kernel_dim
         self.num_directions = num_directions
         self.num_layers = num_layers
         self.num_nodes = num_nodes
+        self.gamma = alpha / beta
         
         self.kernel_mapping = KernelMappingLayer(
             input_dim=feature_dim,
@@ -245,12 +250,6 @@ class ContextAwareKernelMap(nn.Module):
             if feature_dim != kernel_dim else nn.Identity()
         )
         
-        self.context_kernel = ContextAwareKernel(
-            alpha=alpha,
-            beta=beta,
-            num_directions=num_directions,
-            max_iterations=num_layers,
-        )
         self.mapping_layers = nn.ModuleList([
             nn.Conv1d(
                 kernel_dim * (num_directions + 1),
@@ -302,18 +301,7 @@ class ContextAwareKernelMap(nn.Module):
                 )
             matrices.append(matrix)
 
-        sqrt_gamma = self.context_kernel.gamma ** 0.5
-        similarity = self._compute_similarity_matrix(features)
-        optimized_kernel, _ = self.context_kernel(
-            similarity,
-            self._learned_adjacencies(matrices, 0),
-        )
-        # Eq. (2)'s optimized kernel acts on the initial map before the
-        # explicit Eq. (3) expansion continues through the learned layers.
-        kernel_features = torch.bmm(
-            optimized_kernel.to(dtype=initial_features.dtype),
-            initial_features,
-        )
+        sqrt_gamma = self.gamma ** 0.5
 
         for layer_index, layer in enumerate(self.mapping_layers):
             layer_matrices = self._learned_adjacencies(matrices, layer_index)
@@ -372,12 +360,6 @@ class ContextAwareKernelMap(nn.Module):
             normalizer = raw_matrix.abs().sum(dim=-1, keepdim=True).clamp_min(1e-8)
             learned.append(raw_matrix / normalizer)
         return learned
-    
-    def _compute_similarity_matrix(self, features: torch.Tensor) -> torch.Tensor:
-        return torch.stack([
-            self.kernel_mapping.compute_kernel(sample, sample)
-            for sample in features
-        ])
     
     def compute_image_kernel(self,
                            image1_features: torch.Tensor,

@@ -34,9 +34,7 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         gram, with_context = module(features, identity_adjacency)
 
         self.assertTrue(torch.allclose(without_context, torch.zeros_like(features)))
-        similarity = module.kernel_mapping.compute_kernel(features[0], features[0])
-        expected_kernel = similarity * 1.25  # K = S + 0.25 I K I
-        expected = 0.5 * (expected_kernel @ features[0]).unsqueeze(0)
+        expected = 0.5 * features
         self.assertTrue(torch.allclose(with_context, expected))
         self.assertEqual(gram.shape, (1, 2, 2))
 
