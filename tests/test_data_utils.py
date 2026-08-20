@@ -43,7 +43,13 @@ class DataUtilsTest(unittest.TestCase):
                 )
 
             config = ExperimentConfig(
-                dataset=DatasetConfig(data_root=str(root), batch_size=2, num_workers=0),
+                dataset=DatasetConfig(
+                    data_root=str(root),
+                    batch_size=2,
+                    num_workers=0,
+                    image_size=(8, 8),
+                    use_augmentation=False,
+                ),
                 training=TrainingConfig(save_dir=str(root / "runs"), log_dir=str(root / "logs")),
             )
             setup = setup_experiment(config, "smoke")
