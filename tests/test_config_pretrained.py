@@ -9,6 +9,15 @@ from models import BACKBONES, load_pretrained_backbone, load_resnet_backbone
 
 
 class ConfigAndPretrainedTest(unittest.TestCase):
+    def test_paper_neighborhood_order_defaults(self):
+        config = NetworkConfig()
+
+        self.assertEqual(config.max_order, 2)
+        self.assertEqual(config.coarse_max_order, 1)
+
+        with self.assertRaises(ValueError):
+            NetworkConfig(max_order=1, coarse_max_order=2)
+
     def test_config_round_trip_and_backbone_registry(self):
         config = ExperimentConfig(network=NetworkConfig(backbone_name="resnet34"))
         self.assertIs(config.network.network, config.network)

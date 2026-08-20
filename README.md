@@ -12,3 +12,9 @@ PanCAN hierarchically integrates multi-order geometric contexts through cross-sc
 Multi-order Contexts: The core innovation of the paper, which extracts fine-grained local details and coarse-grained global contextual information through random walk and attention mechanisms.
 Cross-scale Aggregation: Progressively constructs features from micro-cells to macro-cells, fully capturing visual and structural information across different scales.
 End-to-end Learning: Supports hierarchical label propagation, dynamically learning adjacency matrices and attention weights.
+
+The default neighborhood orders follow the paper's reported experiments: fine
+scales use second-order neighborhoods, while coarser scales use first-order
+neighborhoods. Checkpoints created with the previous order-3 default or the
+former scalar neighborhood parameterization are not shape-compatible with
+this configuration.

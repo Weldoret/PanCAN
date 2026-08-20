@@ -81,11 +81,38 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         adjacency = [torch.eye(2)]
         learned = module.get_adjacency_matrices(adjacency)
         self.assertTrue(torch.allclose(learned[0], adjacency[0], atol=1e-6))
+        self.assertEqual(learned[0].shape, (2, 2))
+
+        with torch.no_grad():
+            module.neighborhood_residuals[0, 0, 0, 1] = 0.5
+        learned = module.get_adjacency_matrices(adjacency)
+        self.assertGreater(learned[0][0, 1].abs(), 0)
 
         features = torch.randn(1, 2, 2, requires_grad=True)
         _, mapped = module(features, adjacency)
         mapped.sum().backward()
-        self.assertIsNotNone(module.neighborhood_logits.grad)
+        self.assertIsNotNone(module.neighborhood_residuals.grad)
+
+    def test_non_grid_relationships_receive_gradients(self):
+        module = ContextAwareKernelMap(
+            feature_dim=2,
+            kernel_dim=2,
+            num_directions=1,
+            num_layers=2,
+            num_nodes=3,
+        )
+        adjacency = [torch.eye(3)]
+        features = torch.randn(1, 3, 2, requires_grad=True)
+
+        _, mapped = module(features, adjacency)
+        mapped.sum().backward()
+
+        gradients = module.neighborhood_residuals.grad
+        self.assertIsNotNone(gradients)
+        self.assertEqual(gradients.shape, (2, 1, 3, 3))
+        self.assertTrue(torch.isfinite(gradients).all())
+        self.assertGreater(gradients[0, 0, 0, 1].abs(), 0)
+        self.assertGreater(gradients[0, 0, 1, 2].abs(), 0)
 
 
 if __name__ == "__main__":

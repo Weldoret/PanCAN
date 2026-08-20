@@ -31,7 +31,8 @@ class TransitionProbabilityCalculator(nn.Module):
     
     def forward(self,
                 center_features: torch.Tensor,
-                neighbor_features: torch.Tensor) -> torch.Tensor:
+                neighbor_features: torch.Tensor,
+                prior: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Calculate transition probability
         
@@ -50,6 +51,18 @@ class TransitionProbabilityCalculator(nn.Module):
         
         attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.feature_dim)
         attention_scores = attention_scores / self.temperature
+
+        if prior is not None:
+            if prior.dim() == 1:
+                prior = prior.view(1, 1, -1)
+            elif prior.dim() == 2:
+                prior = prior.unsqueeze(1)
+            else:
+                raise ValueError("prior must have shape [neighbors] or [batch, neighbors]")
+            attention_scores = attention_scores + prior.to(
+                device=attention_scores.device,
+                dtype=attention_scores.dtype,
+            ).abs().clamp_min(1e-8).log()
         
         transition_probs = F.softmax(attention_scores, dim=-1)
         
@@ -314,7 +327,7 @@ class RandomWalkAttention(nn.Module):
                  dropout: float = 0.1,
                  use_threshold: bool = True,
                  threshold: float = 0.71,
-                 max_order: int = 3,
+                 max_order: int = 2,
                  num_directions: int = 4):
         super().__init__()
 
@@ -372,9 +385,12 @@ class RandomWalkAttention(nn.Module):
                 f"expected feature dimension {self.feature_dim}, got {features.size(-1)}"
             )
 
-        directional_neighbors = self._as_directional_neighbors(
+        directional_matrices = self._as_directional_matrices(
             adjacency, features.device
         )
+        directional_neighbors = [
+            self._matrix_to_neighbors(matrix) for matrix in directional_matrices
+        ]
         if len(directional_neighbors) != self.num_directions:
             raise ValueError(
                 f"expected {self.num_directions} directional neighborhoods, "
@@ -384,7 +400,7 @@ class RandomWalkAttention(nn.Module):
             raise ValueError("adjacency and feature node counts do not match")
 
         context_parts = [features]
-        for direction_neighbors in directional_neighbors:
+        for direction_index, direction_neighbors in enumerate(directional_neighbors):
             order_contexts = []
             for order in range(1, self.max_order + 1):
                 order_contexts.append(
@@ -393,6 +409,7 @@ class RandomWalkAttention(nn.Module):
                         features,
                         direction_neighbors,
                         order,
+                        adjacency_matrix=directional_matrices[direction_index],
                     )
                 )
             context_parts.extend(order_contexts)
@@ -406,7 +423,8 @@ class RandomWalkAttention(nn.Module):
                          attention_features: torch.Tensor,
                          value_features: torch.Tensor,
                          first_order_neighbors: List[List[int]],
-                         order: int) -> torch.Tensor:
+                         order: int,
+                         adjacency_matrix: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Evaluate Eqs. (8)--(10) for one neighborhood type and order."""
         batch_size, num_nodes, _ = attention_features.shape
         aggregated = attention_features.new_zeros(
@@ -424,7 +442,15 @@ class RandomWalkAttention(nn.Module):
 
             center = attention_features[:, node_idx, :]
             neighbor_attention = attention_features[:, neighbors, :]
-            probabilities = calculator(center, neighbor_attention)
+            prior = None
+            if adjacency_matrix is not None:
+                prior = self._order_relation_weights(
+                    adjacency_matrix,
+                    node_idx,
+                    order,
+                    neighbors,
+                )
+            probabilities = calculator(center, neighbor_attention, prior=prior)
 
             if self.use_threshold:
                 masked_probabilities = probabilities * (
@@ -447,6 +473,19 @@ class RandomWalkAttention(nn.Module):
             ).squeeze(1)
 
         return aggregated
+
+    @staticmethod
+    def _order_relation_weights(
+            adjacency_matrix: torch.Tensor,
+            node_idx: int,
+            order: int,
+            neighbors: List[int],
+    ) -> torch.Tensor:
+        """Return learned path weights for one node and neighborhood order."""
+        weights = adjacency_matrix.abs()
+        for _ in range(1, order):
+            weights = weights @ adjacency_matrix.abs()
+        return weights[node_idx, neighbors]
 
     @staticmethod
     def _get_order_neighbors(first_order_neighbors: List[List[int]],
@@ -472,6 +511,15 @@ class RandomWalkAttention(nn.Module):
             adjacency: Union[torch.Tensor, List[torch.Tensor], Any],
             device: torch.device) -> List[List[List[int]]]:
         """Convert adjacency input into one neighbor list per context type."""
+        matrices = RandomWalkAttention._as_directional_matrices(adjacency, device)
+        return [RandomWalkAttention._matrix_to_neighbors(matrix)
+                for matrix in matrices]
+
+    @staticmethod
+    def _as_directional_matrices(
+            adjacency: Union[torch.Tensor, List[torch.Tensor], Any],
+            device: torch.device) -> List[torch.Tensor]:
+        """Convert adjacency input into weighted matrices per context type."""
         if hasattr(adjacency, "adjacency_matrices"):
             adjacency = adjacency.adjacency_matrices
 
@@ -481,35 +529,54 @@ class RandomWalkAttention(nn.Module):
             if adjacency.dtype in (torch.int8, torch.int16, torch.int32,
                                    torch.int64, torch.uint8):
                 # An index matrix has one column per directional context.
-                adjacency = [adjacency[:, direction]
-                             for direction in range(adjacency.size(1))]
+                matrices = []
+                num_nodes = adjacency.size(0)
+                rows = torch.arange(num_nodes, device=device)
+                for direction in range(adjacency.size(1)):
+                    matrix = torch.zeros(
+                        num_nodes, num_nodes, device=device, dtype=torch.float32
+                    )
+                    neighbors = adjacency[:, direction].to(device=device)
+                    valid = neighbors >= 0
+                    matrix[rows[valid], neighbors[valid].long()] = 1.0
+                    matrices.append(matrix)
+                return matrices
             else:
                 adjacency = [adjacency]
 
         if not isinstance(adjacency, (list, tuple)) or not adjacency:
             raise ValueError("adjacency must contain at least one matrix")
 
-        directional_neighbors = []
+        directional_matrices = []
         for matrix in adjacency:
             matrix = matrix.to(device=device)
             if matrix.dim() == 1:
-                rows = [[int(index)] if int(index) >= 0 else []
-                        for index in matrix.tolist()]
+                num_nodes = matrix.size(0)
+                converted = torch.zeros(
+                    num_nodes, num_nodes, device=device, dtype=torch.float32
+                )
+                rows = torch.arange(num_nodes, device=device)
+                valid = matrix >= 0
+                converted[rows[valid], matrix[valid].long()] = 1.0
+                matrix = converted
             elif matrix.dim() == 2:
                 if matrix.size(0) != matrix.size(1):
                     raise ValueError(
                         "dense adjacency matrices must be square"
                     )
-                rows = [
-                    torch.nonzero(matrix[node_idx] != 0, as_tuple=False)
-                    .flatten().tolist()
-                    for node_idx in range(matrix.size(0))
-                ]
             else:
                 raise ValueError("each adjacency entry must be a vector or matrix")
-            directional_neighbors.append(rows)
+            directional_matrices.append(matrix.to(dtype=torch.float32))
 
-        num_nodes = len(directional_neighbors[0])
-        if any(len(rows) != num_nodes for rows in directional_neighbors):
+        num_nodes = directional_matrices[0].size(0)
+        if any(matrix.size(0) != num_nodes for matrix in directional_matrices):
             raise ValueError("all directional neighborhoods must have equal node counts")
-        return directional_neighbors
+        return directional_matrices
+
+    @staticmethod
+    def _matrix_to_neighbors(matrix: torch.Tensor) -> List[List[int]]:
+        support = matrix.abs() > 1e-8
+        return [
+            torch.nonzero(support[node_idx], as_tuple=False).flatten().tolist()
+            for node_idx in range(matrix.size(0))
+        ]

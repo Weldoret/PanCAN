@@ -308,7 +308,7 @@ class MultiLabelClassifier(nn.Module):
 class ScaleContextBlock(nn.Module):
     """Apply multi-order context to one coarser cell grid."""
 
-    def __init__(self, rows, cols, feature_dim, config, directions):
+    def __init__(self, rows, cols, feature_dim, config, directions, max_order):
         super().__init__()
         self.neighborhood = NeighborhoodSystem(rows, cols, directions=directions)
         self.context_kernel = ContextAwareKernelMap(
@@ -325,7 +325,7 @@ class ScaleContextBlock(nn.Module):
             num_heads=config.attention_heads,
             dropout=config.attention_dropout,
             threshold=config.random_walk_threshold,
-            max_order=config.max_order,
+            max_order=max_order,
             num_directions=config.num_directions,
         )
         self.fusion = nn.Sequential(
@@ -434,6 +434,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
                 feature_dim=self.feature_dim * 2,
                 config=config.network,
                 directions=directions,
+                max_order=config.network.coarse_max_order,
             )
             for rows, cols in config.network.scales[1:]
         ]).to(self.device)

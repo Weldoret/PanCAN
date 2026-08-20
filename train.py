@@ -39,6 +39,10 @@ def parse_args():
                        help='Number of grid rows (default: 8)')
     parser.add_argument('--grid_cols', type=int, default=10,
                        help='Number of grid columns (default: 10)')
+    parser.add_argument('--max_order', type=int, default=2,
+                       help='Fine-scale neighborhood order (default: 2)')
+    parser.add_argument('--coarse_max_order', type=int, default=1,
+                       help='Coarse-scale neighborhood order (default: 1)')
     
     # Training parameters
     parser.add_argument('--epochs', type=int, default=200,
@@ -109,6 +113,8 @@ def load_config(args):
             backbone_name=args.backbone,
             grid_rows=args.grid_rows,
             grid_cols=args.grid_cols,
+            max_order=args.max_order,
+            coarse_max_order=args.coarse_max_order,
             num_classes=num_classes
         )
         

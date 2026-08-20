@@ -10,7 +10,7 @@ import itertools
 class MultiOrderNeighborhood(nn.Module):
     """Multi-order neighborhood system"""
     
-    def __init__(self, max_order: int = 3):
+    def __init__(self, max_order: int = 2):
         """
         Initialize multi-order neighborhood
         
@@ -81,7 +81,7 @@ class MultiOrderContextAggregator(nn.Module):
     
     def __init__(self,
                  feature_dim: int,
-                 max_order: int = 3,
+                 max_order: int = 2,
                  use_attention: bool = True,
                  num_directions: int = 4):
         """
@@ -217,7 +217,7 @@ class MultiOrderContextLayer(nn.Module):
     
     def __init__(self,
                  feature_dim: int,
-                 max_order: int = 3,
+                 max_order: int = 2,
                  use_attention: bool = True,
                  dropout: float = 0.1):
         """

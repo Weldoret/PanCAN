@@ -66,7 +66,8 @@ class NetworkConfig(ConfigMixin):
     gamma: float = 0.5
     num_directions: int = 4
     context_layers: int = 3
-    max_order: int = 3
+    max_order: int = 2
+    coarse_max_order: int = 1
     attention_heads: int = 8
     attention_dropout: float = 0.1
     random_walk_threshold: float = 0.71
@@ -98,6 +99,10 @@ class NetworkConfig(ConfigMixin):
             raise ValueError("num_directions must be 4 or 8")
         if self.context_layers < 1:
             raise ValueError("context_layers must be positive")
+        if self.max_order < 1 or self.coarse_max_order < 1:
+            raise ValueError("neighborhood orders must be positive")
+        if self.coarse_max_order > self.max_order:
+            raise ValueError("coarse_max_order cannot exceed max_order")
         if self.attention_heads < 1:
             raise ValueError("attention_heads must be positive")
         if self.num_groups < 1:

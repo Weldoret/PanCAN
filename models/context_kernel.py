@@ -1,7 +1,6 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 
@@ -204,7 +203,8 @@ class ContextAwareKernelMap(nn.Module):
     Each mapping layer concatenates the initial cell map with directional
     aggregates of the current map, scaled by ``sqrt(alpha / beta)``, then
     applies a pointwise projection to keep the representation usable by later
-    modules.
+    modules. The directional neighborhood matrices are fully learnable
+    ``[num_nodes, num_nodes]`` matrices initialized from the supplied grid.
     """
     
     def __init__(self,
@@ -257,12 +257,11 @@ class ContextAwareKernelMap(nn.Module):
         ])
 
         if learnable_neighborhoods and num_nodes is not None:
-            initial_logit = torch.log(torch.expm1(torch.tensor(1.0))).item()
-            self.neighborhood_logits = nn.Parameter(
-                torch.full((num_layers, num_directions, num_nodes), initial_logit)
+            self.neighborhood_residuals = nn.Parameter(
+                torch.zeros(num_layers, num_directions, num_nodes, num_nodes)
             )
         else:
-            self.register_parameter('neighborhood_logits', None)
+            self.register_parameter('neighborhood_residuals', None)
     
     def forward(self,
                 features: torch.Tensor,
@@ -301,7 +300,7 @@ class ContextAwareKernelMap(nn.Module):
 
         sqrt_gamma = self.context_kernel.gamma ** 0.5
         for layer_index, layer in enumerate(self.mapping_layers):
-            layer_matrices = self._weighted_adjacencies(matrices, layer_index)
+            layer_matrices = self._learned_adjacencies(matrices, layer_index)
             directional_features = [
                 torch.bmm(
                     matrix.unsqueeze(0).expand(batch_size, -1, -1),
@@ -328,27 +327,35 @@ class ContextAwareKernelMap(nn.Module):
     def get_adjacency_matrices(
             self, adjacency_matrices: List[torch.Tensor]) -> List[torch.Tensor]:
         """Return the final learned directional neighborhoods for downstream stages."""
-        if self.neighborhood_logits is None:
+        if self.neighborhood_residuals is None:
             return adjacency_matrices
-        matrices = [matrix.to(self.neighborhood_logits.device)
+        matrices = [matrix.to(self.neighborhood_residuals.device)
                     for matrix in adjacency_matrices]
-        return self._weighted_adjacencies(matrices, self.num_layers - 1)
+        return self._learned_adjacencies(matrices, self.num_layers - 1)
 
-    def _weighted_adjacencies(
+    def _learned_adjacencies(
             self,
             adjacency_matrices: List[torch.Tensor],
             layer_index: int,
     ) -> List[torch.Tensor]:
-        if self.neighborhood_logits is None:
+        if self.neighborhood_residuals is None:
             return adjacency_matrices
         if len(adjacency_matrices) != self.num_directions:
             raise ValueError("adjacency count does not match neighborhood parameters")
         if any(matrix.size(0) != self.num_nodes for matrix in adjacency_matrices):
             raise ValueError("adjacency size does not match neighborhood parameters")
 
-        weights = F.softplus(self.neighborhood_logits[layer_index])
-        return [matrix * weights[direction].unsqueeze(-1)
-                for direction, matrix in enumerate(adjacency_matrices)]
+        residuals = self.neighborhood_residuals[layer_index]
+        learned = []
+        for direction, matrix in enumerate(adjacency_matrices):
+            matrix = matrix.to(device=residuals.device)
+            residual = residuals[direction].to(dtype=matrix.dtype)
+            raw_matrix = matrix + residual
+            # Bound each relationship matrix while allowing every
+            # source/destination pair to move away from the grid prior.
+            normalizer = raw_matrix.abs().sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            learned.append(raw_matrix / normalizer)
+        return learned
     
     def _compute_similarity_matrix(self, features: torch.Tensor) -> torch.Tensor:
         batch_size, num_nodes, feature_dim = features.shape
