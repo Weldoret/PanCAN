@@ -124,32 +124,34 @@ class MultiLabelMetrics:
     def compute_cf1(self, 
                    y_true: np.ndarray,
                    y_pred: np.ndarray) -> float:
-        """
-        Compute class-wise F1 score
-        
-        Args:
-            y_true: True labels
-            y_pred: Predicted labels
-            
-        Returns:
-            Class-wise F1 score
-        """
-        return self.compute_f1_score(y_true, y_pred, average='macro')
+        """Compute F1 from the mean per-class precision and recall."""
+        y_true_bin = y_true > 0.5
+        y_pred_bin = y_pred > 0.5
+        true_positives = np.sum(y_true_bin & y_pred_bin, axis=0)
+        predicted = np.sum(y_pred_bin, axis=0)
+        positives = np.sum(y_true_bin, axis=0)
+        precision = np.divide(
+            true_positives, predicted, out=np.zeros_like(true_positives, dtype=float),
+            where=predicted != 0,
+        ).mean()
+        recall = np.divide(
+            true_positives, positives, out=np.zeros_like(true_positives, dtype=float),
+            where=positives != 0,
+        ).mean()
+        return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     
     def compute_of1(self, 
                    y_true: np.ndarray,
                    y_pred: np.ndarray) -> float:
-        """
-        Compute instance-wise F1 score
-        
-        Args:
-            y_true: True labels
-            y_pred: Predicted labels
-            
-        Returns:
-            Instance-wise F1 score
-        """
-        return self.compute_f1_score(y_true, y_pred, average='samples')
+        """Compute F1 from precision and recall aggregated over all labels."""
+        y_true_bin = y_true > 0.5
+        y_pred_bin = y_pred > 0.5
+        true_positives = np.sum(y_true_bin & y_pred_bin)
+        predicted = np.sum(y_pred_bin)
+        positives = np.sum(y_true_bin)
+        precision = true_positives / predicted if predicted else 0.0
+        recall = true_positives / positives if positives else 0.0
+        return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
     
     def compute_f1_score(self,
                         y_true: np.ndarray,

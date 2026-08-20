@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from config import DatasetConfig, ExperimentConfig, TrainingConfig
 from training.evaluator import Evaluator
+from training.metrics import MultiLabelMetrics
 
 
 class FixedLogitModel(nn.Module):
@@ -21,6 +22,18 @@ class FixedLogitModel(nn.Module):
 
 
 class EvaluatorTest(unittest.TestCase):
+    def test_cf1_and_of1_use_paper_aggregation(self):
+        labels = np.array([[1, 1, 1, 0], [0, 0, 0, 1]])
+        predictions = np.array([[1, 0, 0, 0], [0, 0, 0, 1]])
+        metrics = MultiLabelMetrics()
+
+        self.assertAlmostEqual(metrics.compute_cf1(labels, predictions), 0.5)
+        self.assertAlmostEqual(metrics.compute_of1(labels, predictions), 2 / 3)
+        self.assertNotEqual(
+            metrics.compute_of1(labels, predictions),
+            metrics.compute_f1_score(labels, predictions, average="samples"),
+        )
+
     def _loader(self):
         inputs = torch.zeros(1, 1)
         labels = torch.tensor([[1.0, 1.0, 1.0, 0.0]])
