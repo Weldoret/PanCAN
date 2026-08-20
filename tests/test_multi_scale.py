@@ -75,12 +75,21 @@ class CrossScaleGroupingTest(unittest.TestCase):
             stride=2,
         )
         features = torch.randn(2, 80, 4, requires_grad=True)
+        global_features = torch.randn(2, 4, requires_grad=True)
+        attention_tokens = []
+        aggregator.multi_head_attention.register_forward_pre_hook(
+            lambda _module, inputs: attention_tokens.append(inputs[1].detach())
+        )
 
-        output = aggregator(features, (8, 10))
+        output = aggregator(
+            features, (8, 10), global_features=global_features
+        )
         output.sum().backward()
 
         self.assertEqual(output.shape, (2, 4))
         self.assertTrue(torch.isfinite(features.grad).all())
+        self.assertTrue(torch.isfinite(global_features.grad).all())
+        self.assertTrue(torch.equal(attention_tokens[0][:, -1], global_features.detach()))
 
 
 if __name__ == "__main__":

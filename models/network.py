@@ -417,6 +417,9 @@ class MultiScaleContextAwareNetwork(nn.Module):
             attention_heads=config.network.attention_heads,
             stride=config.network.sliding_window_stride
         ).to(self.device)
+        self.global_projection = nn.Linear(
+            self.feature_dim, self.feature_dim * 2
+        ).to(self.device)
         
         self.coarse_scale_context = nn.ModuleList([
             ScaleContextBlock(
@@ -521,6 +524,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
         batch_size = x.size(0)
         
         features = self.backbone(x)
+        global_features = self.global_projection(features.flatten(2).sum(dim=-1))
         
         grid_features = self.extract_grid_features(features)
         grid_features = self.rotated_position(grid_features)
@@ -549,6 +553,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
             random_walk_features,
             (self.config.network.grid_rows, self.config.network.grid_cols),
             coarse_context_processors=self.coarse_scale_context,
+            global_features=global_features,
         )
         
         fused_features = self.multi_scale_fusion(fused_features)

@@ -287,7 +287,8 @@ class MultiScaleFeatureAggregator(nn.Module):
     def forward(self,
                 features: torch.Tensor,
                 grid_size: Tuple[int, int],
-                coarse_context_processors: Optional[List[nn.Module]] = None) -> torch.Tensor:
+                coarse_context_processors: Optional[List[nn.Module]] = None,
+                global_features: Optional[torch.Tensor] = None) -> torch.Tensor:
         batch_size, num_cells, feature_dim = features.shape
         grid_rows, grid_cols = grid_size
         if num_cells != grid_rows * grid_cols:
@@ -297,6 +298,10 @@ class MultiScaleFeatureAggregator(nn.Module):
         if feature_dim != self.feature_dim:
             raise ValueError(
                 f"expected feature dimension {self.feature_dim}, got {feature_dim}"
+            )
+        if global_features is None or global_features.shape != (batch_size, feature_dim):
+            raise ValueError(
+                f"global_features must have shape {(batch_size, feature_dim)}"
             )
         if coarse_context_processors is not None and len(coarse_context_processors) != len(self.scales) - 1:
             raise ValueError("one context processor is required for each coarser scale")
@@ -344,9 +349,7 @@ class MultiScaleFeatureAggregator(nn.Module):
             current_rows, current_cols = target_rows, target_cols
             scale_tokens.append(current.sum(dim=1))
 
-        # Eq. (18) fuses every scale with the global representation obtained
-        # without an initial spatial partition.
-        scale_tokens.append(features.sum(dim=1))
+        scale_tokens.append(global_features)
         tokens = torch.stack(scale_tokens, dim=1)
         query = tokens.mean(dim=1, keepdim=True)
         return self.multi_head_attention(query, tokens, tokens).squeeze(1)
