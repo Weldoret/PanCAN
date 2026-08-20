@@ -86,15 +86,17 @@ class ContextAwareKernelMapTest(unittest.TestCase):
 
         with torch.no_grad():
             module.neighborhood_residuals[0, 0, 0, 1] = 0.5
+            module.neighborhood_residuals[0, 0, 0, 0] = 0.5
         learned = module.get_adjacency_matrices(adjacency)
-        self.assertGreater(learned[0][0, 1].abs(), 0)
+        self.assertEqual(learned[0][0, 1], 0)
+        self.assertEqual(learned[0][0, 0], 1.5)
 
         features = torch.randn(1, 2, 2, requires_grad=True)
         _, mapped = module(features, adjacency)
         mapped.sum().backward()
         self.assertIsNotNone(module.neighborhood_residuals.grad)
 
-    def test_non_grid_relationships_receive_gradients(self):
+    def test_learned_neighborhoods_preserve_spatial_support(self):
         module = ContextAwareKernelMap(
             feature_dim=2,
             kernel_dim=2,
@@ -112,8 +114,9 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         self.assertIsNotNone(gradients)
         self.assertEqual(gradients.shape, (2, 1, 3, 3))
         self.assertTrue(torch.isfinite(gradients).all())
-        self.assertGreater(gradients[0, 0, 0, 1].abs(), 0)
-        self.assertGreater(gradients[0, 0, 1, 2].abs(), 0)
+        support = adjacency[0].bool()
+        self.assertGreater(gradients[:, 0, support].abs().sum(), 0)
+        self.assertEqual(gradients[:, 0, ~support].abs().sum(), 0)
 
     def test_fixed_point_solver_accepts_batched_similarity_matrices(self):
         from models.context_kernel import ContextAwareKernel

@@ -206,8 +206,8 @@ class ContextAwareKernelMap(nn.Module):
     Each mapping layer concatenates the initial cell map with directional
     aggregates of the current map, scaled by ``sqrt(alpha / beta)``, then
     applies a pointwise projection to keep the representation usable by later
-    modules. The directional neighborhood matrices are fully learnable
-    ``[num_nodes, num_nodes]`` matrices initialized from the supplied grid.
+    modules. Each directional neighborhood learns edge weights per layer while
+    preserving the support of its predefined spatial relationship.
     """
     
     def __init__(self,
@@ -354,11 +354,8 @@ class ContextAwareKernelMap(nn.Module):
         for direction, matrix in enumerate(adjacency_matrices):
             matrix = matrix.to(device=residuals.device)
             residual = residuals[direction].to(dtype=matrix.dtype)
-            raw_matrix = matrix + residual
-            # Bound each relationship matrix while allowing every
-            # source/destination pair to move away from the grid prior.
-            normalizer = raw_matrix.abs().sum(dim=-1, keepdim=True).clamp_min(1e-8)
-            learned.append(raw_matrix / normalizer)
+            support = matrix.abs() > 1e-8
+            learned.append(matrix + residual * support)
         return learned
     
     def compute_image_kernel(self,
