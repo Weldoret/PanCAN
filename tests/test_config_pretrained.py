@@ -4,11 +4,23 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
-from config import ExperimentConfig, NetworkConfig
+from config import DatasetConfig, ExperimentConfig, NetworkConfig, TrainingConfig
 from models import BACKBONES, load_pretrained_backbone, load_resnet_backbone
 
 
 class ConfigAndPretrainedTest(unittest.TestCase):
+    def test_paper_training_defaults(self):
+        dataset = DatasetConfig()
+        training = TrainingConfig()
+
+        self.assertEqual(dataset.batch_size, 6)
+        self.assertEqual(dataset.image_size, (400, 500))
+        self.assertTrue(dataset.use_augmentation)
+        self.assertEqual(training.num_epochs, 200)
+        self.assertEqual(training.learning_rate, 1e-4)
+        self.assertEqual(training.optimizer, "adamw")
+        self.assertEqual(training.ema_decay, 0.9997)
+
     def test_paper_neighborhood_order_defaults(self):
         config = NetworkConfig()
 

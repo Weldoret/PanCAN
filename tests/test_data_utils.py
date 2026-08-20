@@ -7,9 +7,37 @@ import torch
 from config import DatasetConfig, ExperimentConfig, TrainingConfig
 from models.neighborhood import NeighborhoodSystem
 from utils import create_data_loaders, setup_experiment
+from utils.data import ImageTransform
 
 
 class DataUtilsTest(unittest.TestCase):
+    def test_image_transform_resizes_and_cutout_masks_training_only(self):
+        image = torch.ones(3, 8, 8)
+        transform = ImageTransform(
+            image_size=(10, 12),
+            train=True,
+            use_augmentation=True,
+            randaugment_num_ops=0,
+            randaugment_magnitude=9,
+            cutout_size=4,
+        )
+        transformed = transform(image)
+
+        self.assertEqual(transformed.shape, (3, 10, 12))
+        self.assertTrue((transformed == 0).any())
+
+        evaluation_transform = ImageTransform(
+            image_size=(10, 12),
+            train=False,
+            use_augmentation=True,
+            randaugment_num_ops=2,
+            randaugment_magnitude=9,
+            cutout_size=4,
+        )
+        first = evaluation_transform(image)
+        second = evaluation_transform(image)
+        self.assertTrue(torch.equal(first, second))
+
     def test_adjacency_matrices_are_registered_buffers(self):
         system = NeighborhoodSystem(2, 2)
 
