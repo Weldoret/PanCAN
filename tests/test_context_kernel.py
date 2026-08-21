@@ -17,12 +17,6 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         )
         module.eval()
 
-        with torch.no_grad():
-            layer = module.mapping_layers[0]
-            layer.weight.zero_()
-            layer.bias.zero_()
-            layer.weight[:, 2:, 0].copy_(torch.eye(2))
-
         features = torch.tensor(
             [[[1.0, 2.0], [3.0, 4.0]]],
             requires_grad=True,
@@ -33,14 +27,15 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         _, without_context = module(features, zero_adjacency)
         gram, with_context = module(features, identity_adjacency)
 
-        self.assertTrue(torch.allclose(without_context, torch.zeros_like(features)))
-        expected = 0.5 * features
+        self.assertTrue(torch.allclose(
+            without_context, torch.cat((features, torch.zeros_like(features)), dim=-1)
+        ))
+        expected = torch.cat((features, 0.5 * features), dim=-1)
         self.assertTrue(torch.allclose(with_context, expected))
         self.assertEqual(gram.shape, (1, 2, 2))
 
         with_context.sum().backward()
         self.assertIsNotNone(features.grad)
-        self.assertIsNotNone(layer.weight.grad)
 
     def test_each_layer_reuses_the_initial_map(self):
         module = ContextAwareKernelMap(
@@ -54,19 +49,11 @@ class ContextAwareKernelMapTest(unittest.TestCase):
         )
         module.eval()
 
-        with torch.no_grad():
-            first, second = module.mapping_layers
-            first.weight.zero_()
-            first.bias.zero_()
-            first.weight[:, 2:, 0].copy_(torch.eye(2))
-            second.weight.zero_()
-            second.bias.zero_()
-            second.weight[:, :2, 0].copy_(torch.eye(2))
-
         features = torch.tensor([[[1.0, 2.0], [3.0, 4.0]]])
         _, mapped = module(features, [torch.eye(2)])
 
-        self.assertTrue(torch.allclose(mapped, features))
+        expected = torch.cat((features, 0.5 * features, 0.25 * features), dim=-1)
+        self.assertTrue(torch.allclose(mapped, expected))
 
     def test_learnable_neighborhoods_start_as_the_fixed_grid(self):
         module = ContextAwareKernelMap(

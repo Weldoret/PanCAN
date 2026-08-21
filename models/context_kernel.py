@@ -201,13 +201,12 @@ class KernelMappingLayer(nn.Module):
 
 
 class ContextAwareKernelMap(nn.Module):
-    """Explicit context-aware kernel map from the paper's Eqs. (3)--(6).
+    """Exact unfolded context-aware kernel map from paper Eq. (4).
 
     Each mapping layer concatenates the initial cell map with directional
-    aggregates of the current map, scaled by ``sqrt(alpha / beta)``, then
-    applies a pointwise projection to keep the representation usable by later
-    modules. Each directional neighborhood learns edge weights per layer while
-    preserving the support of its predefined spatial relationship.
+    aggregates of the complete current map, scaled by ``sqrt(alpha / beta)``.
+    No projection is inserted into this recurrence: PanCAN's separate Eq. (19)
+    reduction belongs to MOCAMN, not to the kernel identity in Eq. (4).
     """
     
     def __init__(self,
@@ -250,15 +249,6 @@ class ContextAwareKernelMap(nn.Module):
             if feature_dim != kernel_dim else nn.Identity()
         )
         
-        self.mapping_layers = nn.ModuleList([
-            nn.Conv1d(
-                kernel_dim * (num_directions + 1),
-                kernel_dim,
-                kernel_size=1,
-            )
-            for _ in range(num_layers)
-        ])
-
         if learnable_neighborhoods and num_nodes is not None:
             self.neighborhood_residuals = nn.Parameter(
                 torch.zeros(num_layers, num_directions, num_nodes, num_nodes)
@@ -303,7 +293,7 @@ class ContextAwareKernelMap(nn.Module):
 
         sqrt_gamma = self.gamma ** 0.5
 
-        for layer_index, layer in enumerate(self.mapping_layers):
+        for layer_index in range(self.num_layers):
             layer_matrices = self._learned_adjacencies(matrices, layer_index)
             directional_features = [
                 torch.bmm(
@@ -317,7 +307,7 @@ class ContextAwareKernelMap(nn.Module):
                 + [sqrt_gamma * feature for feature in directional_features],
                 dim=-1,
             )
-            kernel_features = layer(unfolded.transpose(1, 2)).transpose(1, 2)
+            kernel_features = unfolded
 
         # The Gram matrix is the inner product of the unfolded cell maps
         # (Eq. (4)); retaining the batch dimension keeps every image's map
