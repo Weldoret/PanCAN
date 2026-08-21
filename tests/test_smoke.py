@@ -46,9 +46,10 @@ class EndToEndSmokeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
 
-        self.assertEqual(model.random_walk.max_order, 2)
+        self.assertEqual(model.context_network.max_order, 2)
+        self.assertEqual(len(model.context_network.layers), 3)
         self.assertEqual(
-            [block.random_walk.max_order for block in model.coarse_scale_context],
+            [block.context_network.max_order for block in model.coarse_scale_context],
             [1, 1, 2],
         )
 
@@ -70,7 +71,7 @@ class EndToEndSmokeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
         self.assertEqual(
-            [block.random_walk.max_order for block in model.coarse_scale_context],
+            [block.context_network.max_order for block in model.coarse_scale_context],
             [2, 1, 1, 2],
         )
 
@@ -105,7 +106,7 @@ class EndToEndSmokeTest(unittest.TestCase):
         )
 
         with torch.no_grad():
-            model.context_kernel.neighborhood_residuals[-1, 0, 0, 3] = 0.5
+            model.context_network.neighborhood_residuals[-1, 0, 0, 3] = 0.5
 
         with torch.no_grad():
             logits = model(torch.randn(2, 3, 8, 8))

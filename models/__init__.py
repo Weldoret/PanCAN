@@ -7,7 +7,7 @@ from .pretrained import (
     load_resnet_backbone,
     load_tresnet_backbone,
 )
-from .random_walk import RandomWalkAttention
+from .random_walk import MultiOrderContextMappingNetwork, RandomWalkAttention
 
 
 def create_model(
@@ -62,4 +62,5 @@ __all__ = [
     "load_tresnet_backbone",
     "load_cvt_backbone",
     "RandomWalkAttention",
+    "MultiOrderContextMappingNetwork",
 ]

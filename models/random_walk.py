@@ -368,7 +368,8 @@ class RandomWalkAttention(nn.Module):
 
     def forward(self,
                 features: torch.Tensor,
-                adjacency: Union[torch.Tensor, List[torch.Tensor], Any]) -> torch.Tensor:
+                adjacency: Union[torch.Tensor, List[torch.Tensor], Any],
+                initial_features: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Return the reduced multi-order context representation ``[B, N, F]``.
 
         The same cell map supplies queries, matches, and values, exactly as
@@ -382,6 +383,10 @@ class RandomWalkAttention(nn.Module):
             raise ValueError(
                 f"expected feature dimension {self.feature_dim}, got {features.size(-1)}"
             )
+        if initial_features is None:
+            initial_features = features
+        if initial_features.shape != features.shape:
+            raise ValueError("initial_features must match features")
 
         directional_matrices = self._as_directional_matrices(
             adjacency, features.device
@@ -397,7 +402,7 @@ class RandomWalkAttention(nn.Module):
         if len(directional_neighbors[0]) != features.size(1):
             raise ValueError("adjacency and feature node counts do not match")
 
-        context_parts = [features]
+        context_parts = [initial_features]
         for direction_index, direction_neighbors in enumerate(directional_neighbors):
             order_contexts = []
             for order in range(1, self.max_order + 1):
@@ -552,3 +557,92 @@ class RandomWalkAttention(nn.Module):
             torch.nonzero(support[node_idx], as_tuple=False).flatten().tolist()
             for node_idx in range(matrix.size(0))
         ]
+
+
+class MultiOrderContextMappingNetwork(nn.Module):
+    """The paper's T-layer MOCAMN for one spatial scale.
+
+    Every layer evaluates Eqs. (5)--(8), concatenates the resulting order and
+    direction features according to Eqs. (16)--(17), and reduces them with the
+    Eq. (19) pointwise projection.  Phi^[0] is reused in every layer, while
+    P_c^(s,t) and the attention projections are layer-specific.
+    """
+
+    def __init__(self,
+                 input_dim: int,
+                 feature_dim: int,
+                 num_nodes: int,
+                 num_layers: int = 3,
+                 max_order: int = 2,
+                 num_directions: int = 4,
+                 alpha: float = 0.5,
+                 beta: float = 1.0,
+                 threshold: float = 0.71,
+                 dropout: float = 0.1):
+        super().__init__()
+        if num_layers < 1:
+            raise ValueError("num_layers must be positive")
+        if num_nodes < 1:
+            raise ValueError("num_nodes must be positive")
+        if alpha < 0 or beta <= 0:
+            raise ValueError("alpha must be non-negative and beta positive")
+
+        self.input_dim = input_dim
+        self.feature_dim = feature_dim
+        self.num_nodes = num_nodes
+        self.num_layers = num_layers
+        self.max_order = max_order
+        self.num_directions = num_directions
+        self.initial_projection = (
+            nn.Linear(input_dim, feature_dim)
+            if input_dim != feature_dim else nn.Identity()
+        )
+        self.layers = nn.ModuleList([
+            RandomWalkAttention(
+                feature_dim=feature_dim,
+                dropout=dropout,
+                threshold=threshold,
+                max_order=max_order,
+                num_directions=num_directions,
+                gamma=alpha / beta,
+            )
+            for _ in range(num_layers)
+        ])
+        self.neighborhood_residuals = nn.Parameter(
+            torch.zeros(num_layers, num_directions, num_nodes, num_nodes)
+        )
+
+    def forward(self, features, adjacency_matrices):
+        if features.dim() != 3:
+            raise ValueError("features must have shape [batch, nodes, features]")
+        if features.shape[1:] != (self.num_nodes, self.input_dim):
+            raise ValueError(
+                f"expected {self.num_nodes} nodes and input dimension {self.input_dim}"
+            )
+
+        initial = self.initial_projection(features)
+        current = initial
+        for layer_index, layer in enumerate(self.layers):
+            current = layer(
+                current,
+                self.get_adjacency_matrices(adjacency_matrices, layer_index),
+                initial_features=initial,
+            )
+
+        return torch.bmm(current, current.transpose(1, 2)), current
+
+    def get_adjacency_matrices(self, adjacency_matrices, layer_index=-1):
+        if len(adjacency_matrices) != self.num_directions:
+            raise ValueError(
+                f"expected {self.num_directions} directional adjacency matrices"
+            )
+        layer_index %= self.num_layers
+        residuals = self.neighborhood_residuals[layer_index]
+        learned = []
+        for direction, matrix in enumerate(adjacency_matrices):
+            matrix = matrix.to(device=residuals.device, dtype=residuals.dtype)
+            if matrix.shape != (self.num_nodes, self.num_nodes):
+                raise ValueError("adjacency matrices must match num_nodes")
+            support = matrix.abs() > 1e-8
+            learned.append(matrix + residuals[direction] * support)
+        return learned

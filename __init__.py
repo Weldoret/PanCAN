@@ -22,7 +22,7 @@ from .models.pretrained import (
     load_resnet_backbone,
     load_tresnet_backbone,
 )
-from .models.random_walk import RandomWalkAttention
+from .models.random_walk import MultiOrderContextMappingNetwork, RandomWalkAttention
 from .training import (
     Evaluator,
     MultiLabelMetrics,
@@ -86,6 +86,7 @@ __all__ = [
     "NUSWIDEConfig",
     "PerformanceMetrics",
     "RandomWalkAttention",
+    "MultiOrderContextMappingNetwork",
     "TrainingConfig",
     "TrainingManager",
     "VOC2007Config",

@@ -16,8 +16,7 @@ from .neighborhood import (
     NeighborhoodSystem,
     generate_adjacency_index_matrix,
 )
-from .context_kernel import ContextAwareKernelMap
-from .random_walk import RandomWalkAttention
+from .random_walk import MultiOrderContextMappingNetwork
 from .multi_scale import MultiScaleFeatureAggregator, CenteredSelfAttention
 
 
@@ -309,35 +308,24 @@ class ScaleContextBlock(nn.Module):
     def __init__(self, rows, cols, feature_dim, config, directions, max_order):
         super().__init__()
         self.neighborhood = NeighborhoodSystem(rows, cols, directions=directions)
-        self.context_kernel = ContextAwareKernelMap(
+        self.context_network = MultiOrderContextMappingNetwork(
+            input_dim=feature_dim,
             feature_dim=feature_dim,
-            kernel_dim=feature_dim,
+            num_nodes=rows * cols,
             alpha=config.alpha,
             beta=config.beta,
             num_directions=config.num_directions,
             num_layers=config.context_layers,
-            num_nodes=rows * cols,
-        )
-        self.random_walk = RandomWalkAttention(
-            feature_dim=feature_dim,
-            num_heads=config.attention_heads,
             dropout=config.attention_dropout,
             threshold=config.random_walk_threshold,
             max_order=max_order,
-            num_directions=config.num_directions,
-            gamma=config.alpha / config.beta,
-        )
-        self.fusion = nn.Sequential(
-            nn.Linear(feature_dim * 2, feature_dim),
-            nn.ReLU(inplace=True),
         )
 
     def forward(self, features):
-        adjacency = self.neighborhood.adjacency_matrices
-        _, mapped = self.context_kernel(features, adjacency)
-        learned_adjacency = self.context_kernel.get_adjacency_matrices(adjacency)
-        walked = self.random_walk(mapped, learned_adjacency)
-        return self.fusion(torch.cat((mapped, walked), dim=-1))
+        _, mapped = self.context_network(
+            features, self.neighborhood.adjacency_matrices
+        )
+        return mapped
 
 
 class MultiScaleContextAwareNetwork(nn.Module):
@@ -383,26 +371,17 @@ class MultiScaleContextAwareNetwork(nn.Module):
             directions=directions,
         ).to(self.device)
         
-        self.context_kernel = ContextAwareKernelMap(
-            feature_dim=self.feature_dim,
-            kernel_dim=self.feature_dim * 2,
+        self.context_network = MultiOrderContextMappingNetwork(
+            input_dim=self.feature_dim,
+            feature_dim=self.feature_dim * 2,
+            num_nodes=config.network.num_blocks,
             alpha=config.network.alpha,
             beta=config.network.beta,
             num_directions=config.network.num_directions,
-            kernel_type='gaussian',
             num_layers=config.network.context_layers,
-            num_nodes=config.network.num_blocks,
-        ).to(self.device)
-        
-        self.random_walk = RandomWalkAttention(
-            feature_dim=self.feature_dim * 2,
-            num_heads=config.network.attention_heads,
             dropout=config.network.attention_dropout,
-            use_threshold=True,
             threshold=config.network.random_walk_threshold,
             max_order=config.network.max_order,
-            num_directions=config.network.num_directions,
-            gamma=config.network.alpha / config.network.beta,
         ).to(self.device)
         
         self.multi_scale_aggregator = MultiScaleFeatureAggregator(
@@ -532,18 +511,13 @@ class MultiScaleContextAwareNetwork(nn.Module):
         grid_features = self.batch_norm(grid_features)
         grid_features = grid_features.permute(0, 2, 1)
         
-        kernel_matrix, kernel_features = self.context_kernel(grid_features, self.adjacency_matrices)
-        learned_adjacency_matrices = self.context_kernel.get_adjacency_matrices(
+        _, context_features = self.context_network(
+            grid_features,
             self.adjacency_matrices
         )
-        
-        random_walk_features = self.random_walk(
-            kernel_features,
-            learned_adjacency_matrices
-        )
-        
+
         fused_features = self.multi_scale_aggregator(
-            random_walk_features,
+            context_features,
             (self.config.network.grid_rows, self.config.network.grid_cols),
             coarse_context_processors=self.coarse_scale_context,
             global_features=global_features,
