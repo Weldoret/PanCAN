@@ -46,7 +46,6 @@ class EndToEndSmokeTest(unittest.TestCase):
             device=torch.device("cpu"),
         )
 
-        self.assertEqual(model.multi_order_aggregator.max_order, 2)
         self.assertEqual(model.random_walk.max_order, 2)
         self.assertEqual(
             [block.random_walk.max_order for block in model.coarse_scale_context],

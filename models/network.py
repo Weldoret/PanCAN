@@ -17,7 +17,6 @@ from .neighborhood import (
     generate_adjacency_index_matrix,
 )
 from .context_kernel import ContextAwareKernelMap
-from .multi_order import MultiOrderContextAggregator
 from .random_walk import RandomWalkAttention
 from .multi_scale import MultiScaleFeatureAggregator, CenteredSelfAttention
 
@@ -326,6 +325,7 @@ class ScaleContextBlock(nn.Module):
             threshold=config.random_walk_threshold,
             max_order=max_order,
             num_directions=config.num_directions,
+            gamma=config.alpha / config.beta,
         )
         self.fusion = nn.Sequential(
             nn.Linear(feature_dim * 2, feature_dim),
@@ -336,7 +336,7 @@ class ScaleContextBlock(nn.Module):
         adjacency = self.neighborhood.adjacency_matrices
         _, mapped = self.context_kernel(features, adjacency)
         learned_adjacency = self.context_kernel.get_adjacency_matrices(adjacency)
-        walked = self.random_walk(mapped, mapped, learned_adjacency)
+        walked = self.random_walk(mapped, learned_adjacency)
         return self.fusion(torch.cat((mapped, walked), dim=-1))
 
 
@@ -394,12 +394,6 @@ class MultiScaleContextAwareNetwork(nn.Module):
             num_nodes=config.network.num_blocks,
         ).to(self.device)
         
-        self.multi_order_aggregator = MultiOrderContextAggregator(
-            max_order=config.network.max_order,
-            feature_dim=self.feature_dim * 2,
-            num_directions=config.network.num_directions
-        ).to(self.device)
-
         self.random_walk = RandomWalkAttention(
             feature_dim=self.feature_dim * 2,
             num_heads=config.network.attention_heads,
@@ -408,6 +402,7 @@ class MultiScaleContextAwareNetwork(nn.Module):
             threshold=config.network.random_walk_threshold,
             max_order=config.network.max_order,
             num_directions=config.network.num_directions,
+            gamma=config.network.alpha / config.network.beta,
         ).to(self.device)
         
         self.multi_scale_aggregator = MultiScaleFeatureAggregator(
@@ -538,14 +533,8 @@ class MultiScaleContextAwareNetwork(nn.Module):
             self.adjacency_matrices
         )
         
-        multi_order_features = self.multi_order_aggregator(
-            kernel_features,
-            self.neighborhood_system.adjacency_index
-        )
-        
         random_walk_features = self.random_walk(
             kernel_features,
-            multi_order_features,
             learned_adjacency_matrices
         )
         

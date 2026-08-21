@@ -328,13 +328,16 @@ class RandomWalkAttention(nn.Module):
                  use_threshold: bool = True,
                  threshold: float = 0.71,
                  max_order: int = 2,
-                 num_directions: int = 4):
+                 num_directions: int = 4,
+                 gamma: float = 1.0):
         super().__init__()
 
         if max_order < 1:
             raise ValueError("max_order must be positive")
         if num_directions < 1:
             raise ValueError("num_directions must be positive")
+        if gamma < 0:
+            raise ValueError("gamma must be non-negative")
 
         self.feature_dim = feature_dim
         self.num_heads = num_heads
@@ -342,6 +345,7 @@ class RandomWalkAttention(nn.Module):
         self.num_directions = num_directions
         self.use_threshold = use_threshold
         self.threshold = threshold
+        self.sqrt_gamma = math.sqrt(gamma)
 
         # These modules are the paper's W_q^k, W_m^k, and W_v^k. The existing
         # TransitionProbabilityCalculator supplies the first two projections
@@ -364,22 +368,16 @@ class RandomWalkAttention(nn.Module):
 
     def forward(self,
                 features: torch.Tensor,
-                context_features: torch.Tensor,
                 adjacency: Union[torch.Tensor, List[torch.Tensor], Any]) -> torch.Tensor:
         """Return the reduced multi-order context representation ``[B, N, F]``.
 
-        ``context_features`` supplies the feature vectors used by Eqs. (8)--(9)
-        while ``features`` supplies the values in Eq. (10). In the current
-        network these tensors have the same shape, but keeping them separate
-        lets the random-walk stage consume the preceding context representation
-        without changing the paper's value aggregation.
+        The same cell map supplies queries, matches, and values, exactly as
+        Eqs. (6)--(8). Order-specific features are concatenated per direction,
+        transformed by the corresponding learned P_c, and finally concatenated
+        with the intrinsic map as prescribed by Eqs. (16)--(17).
         """
-        if features.dim() != 3 or context_features.dim() != 3:
-            raise ValueError("features and context_features must be 3D tensors")
-        if features.shape != context_features.shape:
-            raise ValueError(
-                "features and context_features must have the same shape"
-            )
+        if features.dim() != 3:
+            raise ValueError("features must be a 3D tensor")
         if features.size(-1) != self.feature_dim:
             raise ValueError(
                 f"expected feature dimension {self.feature_dim}, got {features.size(-1)}"
@@ -405,14 +403,18 @@ class RandomWalkAttention(nn.Module):
             for order in range(1, self.max_order + 1):
                 order_contexts.append(
                     self._aggregate_order(
-                        context_features,
                         features,
                         direction_neighbors,
                         order,
-                        adjacency_matrix=directional_matrices[direction_index],
                     )
                 )
-            context_parts.extend(order_contexts)
+            directional_context = torch.cat(order_contexts, dim=-1)
+            matrix = directional_matrices[direction_index].to(
+                device=features.device, dtype=features.dtype
+            )
+            context_parts.append(
+                self.sqrt_gamma * torch.matmul(matrix, directional_context)
+            )
 
         full_context = torch.cat(context_parts, dim=-1)
         reduced = self.dimension_reduction(full_context.transpose(1, 2))
@@ -420,14 +422,12 @@ class RandomWalkAttention(nn.Module):
         return self.dropout(reduced)
 
     def _aggregate_order(self,
-                         attention_features: torch.Tensor,
-                         value_features: torch.Tensor,
+                         features: torch.Tensor,
                          first_order_neighbors: List[List[int]],
-                         order: int,
-                         adjacency_matrix: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Evaluate Eqs. (8)--(10) for one neighborhood type and order."""
-        batch_size, num_nodes, _ = attention_features.shape
-        aggregated = attention_features.new_zeros(
+                         order: int) -> torch.Tensor:
+        """Evaluate Eqs. (6)--(8) for one neighborhood type and order."""
+        batch_size, num_nodes, _ = features.shape
+        aggregated = features.new_zeros(
             batch_size, num_nodes, self.feature_dim
         )
         calculator = self.transition_calculators[order - 1]
@@ -440,34 +440,18 @@ class RandomWalkAttention(nn.Module):
             if not neighbors:
                 continue
 
-            center = attention_features[:, node_idx, :]
-            neighbor_attention = attention_features[:, neighbors, :]
-            prior = None
-            if adjacency_matrix is not None:
-                prior = self._order_relation_weights(
-                    adjacency_matrix,
-                    node_idx,
-                    order,
-                    neighbors,
-                )
-            probabilities = calculator(center, neighbor_attention, prior=prior)
+            center = features[:, node_idx, :]
+            neighbor_features = features[:, neighbors, :]
+            probabilities = calculator(center, neighbor_features)
 
             if self.use_threshold:
-                masked_probabilities = probabilities * (
+                # The paper retains only high-probability cells in Eq. (8); it
+                # does not define a second normalization after selection.
+                probabilities = probabilities * (
                     probabilities > self.threshold
                 ).to(probabilities.dtype)
-                normalizer = masked_probabilities.sum(dim=-1, keepdim=True)
-                fallback = F.one_hot(
-                    probabilities.argmax(dim=-1),
-                    num_classes=probabilities.size(-1),
-                ).to(dtype=probabilities.dtype)
-                probabilities = torch.where(
-                    normalizer > 1e-8,
-                    masked_probabilities / normalizer.clamp_min(1e-8),
-                    fallback,
-                )
 
-            values = value_projection(value_features[:, neighbors, :])
+            values = value_projection(neighbor_features)
             aggregated[:, node_idx, :] = torch.bmm(
                 probabilities.unsqueeze(1), values
             ).squeeze(1)
@@ -475,35 +459,23 @@ class RandomWalkAttention(nn.Module):
         return aggregated
 
     @staticmethod
-    def _order_relation_weights(
-            adjacency_matrix: torch.Tensor,
-            node_idx: int,
-            order: int,
-            neighbors: List[int],
-    ) -> torch.Tensor:
-        """Return learned path weights for one node and neighborhood order."""
-        weights = adjacency_matrix.abs()
-        for _ in range(1, order):
-            weights = weights @ adjacency_matrix.abs()
-        return weights[node_idx, neighbors]
-
-    @staticmethod
     def _get_order_neighbors(first_order_neighbors: List[List[int]],
                              node_idx: int,
                              order: int) -> List[int]:
         """Build the recursive k-th order neighborhood for one direction."""
-        neighbors = set(first_order_neighbors[node_idx])
         if order == 1:
-            return sorted(neighbors)
+            return sorted(set(first_order_neighbors[node_idx]))
 
-        for _ in range(2, order + 1):
-            next_neighbors = set()
-            for neighbor in neighbors:
-                if neighbor != node_idx:
-                    next_neighbors.update(first_order_neighbors[neighbor])
-            next_neighbors.discard(node_idx)
-            neighbors = next_neighbors
-
+        previous = RandomWalkAttention._get_order_neighbors(
+            first_order_neighbors, node_idx, order - 1
+        )
+        neighbors = set()
+        for neighbor in previous:
+            if neighbor != node_idx:
+                neighbors.update(RandomWalkAttention._get_order_neighbors(
+                    first_order_neighbors, neighbor, order - 1
+                ))
+        neighbors.discard(node_idx)
         return sorted(neighbors)
 
     @staticmethod

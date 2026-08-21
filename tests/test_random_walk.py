@@ -7,13 +7,10 @@ from models.random_walk import RandomWalkAttention
 
 
 class RandomWalkAttentionTest(unittest.TestCase):
-    def test_thresholded_probabilities_are_renormalized(self):
+    def test_threshold_keeps_original_transition_probability(self):
         attention_features = torch.tensor(
             [[[math.sqrt(2.0), 0.0], [math.log(4.0), 0.0], [0.0, 0.0]]]
         )
-        value_features = torch.tensor(
-            [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
-        )
         module = RandomWalkAttention(
             feature_dim=2,
             dropout=0.0,
@@ -32,19 +29,17 @@ class RandomWalkAttentionTest(unittest.TestCase):
             module.value_projections[0].bias.zero_()
 
         aggregated = module._aggregate_order(
-            attention_features,
-            value_features,
-            [[1, 2], [], []],
-            order=1,
+            attention_features, [[1, 2], [], []], order=1
         )
 
-        self.assertTrue(torch.allclose(aggregated[0, 0], value_features[0, 1]))
+        self.assertTrue(torch.allclose(
+            aggregated[0, 0],
+            torch.tensor([0.8 * math.log(4.0), 0.0]),
+            atol=1e-6,
+        ))
 
-    def test_threshold_falls_back_to_most_likely_neighbor(self):
+    def test_threshold_can_select_no_neighbor(self):
         attention_features = torch.zeros(1, 3, 2)
-        value_features = torch.tensor(
-            [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
-        )
         module = RandomWalkAttention(
             feature_dim=2,
             dropout=0.0,
@@ -63,13 +58,10 @@ class RandomWalkAttentionTest(unittest.TestCase):
             module.value_projections[0].bias.zero_()
 
         aggregated = module._aggregate_order(
-            attention_features,
-            value_features,
-            [[1, 2], [], []],
-            order=1,
+            attention_features, [[1, 2], [], []], order=1
         )
 
-        self.assertTrue(torch.allclose(aggregated[0, 0], value_features[0, 1]))
+        self.assertTrue(torch.equal(aggregated[0, 0], torch.zeros(2)))
 
     def test_accepts_dense_directional_adjacency_and_backpropagates(self):
         features = torch.randn(2, 4, 16, requires_grad=True)
@@ -91,7 +83,7 @@ class RandomWalkAttentionTest(unittest.TestCase):
             num_directions=2,
         )
 
-        output = module(features, features, adjacency)
+        output = module(features, adjacency)
         self.assertEqual(output.shape, features.shape)
         self.assertTrue(torch.isfinite(output).all())
 
@@ -109,7 +101,7 @@ class RandomWalkAttentionTest(unittest.TestCase):
             num_directions=2,
         )
 
-        output = module(features, features, adjacency_index)
+        output = module(features, adjacency_index)
         self.assertEqual(output.shape, features.shape)
         self.assertTrue(torch.isfinite(output).all())
 
@@ -143,17 +135,22 @@ class RandomWalkAttentionTest(unittest.TestCase):
             module.dimension_reduction.bias.zero_()
             module.dimension_reduction.weight[:, 2:, 0].copy_(torch.eye(2))
 
-        output = module(features, features, adjacency)
+        output = module(features, adjacency)
 
-        scores = torch.tensor([0.0, 1.0]) / (2.0 ** 0.5)
-        expected_node_zero = torch.softmax(scores, dim=0) @ features[0, [1, 2]]
         expected = torch.stack([
-            expected_node_zero,
             features[0, 2],
+            torch.zeros(2),
             torch.zeros(2),
         ]).unsqueeze(0)
 
         self.assertTrue(torch.allclose(output, expected, atol=1e-6))
+
+    def test_third_order_uses_papers_recursive_neighborhood(self):
+        neighbors = [[1], [2], [3], [4], []]
+        self.assertEqual(
+            RandomWalkAttention._get_order_neighbors(neighbors, 0, 3),
+            [4],
+        )
 
 
 if __name__ == "__main__":
