@@ -31,7 +31,6 @@ class GroupedClassifierTest(unittest.TestCase):
         classifier = MultiLabelClassifier(
             input_dim=4,
             num_classes=4,
-            dropout_rate=0.0,
             class_groups=[[2, 0], [1, 3]],
         )
         with torch.no_grad():
@@ -42,6 +41,15 @@ class GroupedClassifierTest(unittest.TestCase):
 
         logits = classifier(torch.zeros(1, 4))
         self.assertTrue(torch.equal(logits, torch.tensor([[2.0, 3.0, 1.0, 4.0]])))
+
+    def test_non_grouped_ablation_is_one_fully_connected_layer(self):
+        classifier = MultiLabelClassifier(
+            input_dim=4,
+            num_classes=3,
+            use_grouped_fc=False,
+        )
+        self.assertIsInstance(classifier.classifier, nn.Linear)
+        self.assertEqual(classifier(torch.zeros(2, 4)).shape, (2, 3))
 
     def test_grouped_loss_backpropagates(self):
         logits = torch.zeros(2, 4, requires_grad=True)
@@ -60,7 +68,6 @@ class GroupedClassifierTest(unittest.TestCase):
                 self.classifier = MultiLabelClassifier(
                     input_dim=4,
                     num_classes=4,
-                    dropout_rate=0.0,
                     class_groups=[[0, 1], [2, 3]],
                 )
 

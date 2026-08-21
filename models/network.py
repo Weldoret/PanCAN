@@ -207,7 +207,6 @@ class MultiLabelClassifier(nn.Module):
                  num_classes: int,
                  use_grouped_fc: bool = True,
                  num_groups: int = 5,
-                 dropout_rate: float = 0.5,
                  class_groups: Optional[Sequence[Sequence[int]]] = None,
                  group_weights: Optional[Sequence[float]] = None):
         """
@@ -218,15 +217,11 @@ class MultiLabelClassifier(nn.Module):
             num_classes: Number of classes
             use_grouped_fc: Whether to use grouped fully connected layers
             num_groups: Number of groups
-            dropout_rate: Dropout rate
         """
         super().__init__()
         self.input_dim = input_dim
         self.num_classes = num_classes
         self.use_grouped_fc = use_grouped_fc
-        self.dropout_rate = dropout_rate
-
-        self.dropout = nn.Dropout(dropout_rate)
 
         if use_grouped_fc:
             if class_groups is None:
@@ -254,15 +249,7 @@ class MultiLabelClassifier(nn.Module):
         else:
             self.class_groups = ((tuple(range(num_classes))),)
             self.num_groups = 1
-            self.classifier = nn.Sequential(
-                nn.Linear(input_dim, 1024),
-                nn.ReLU(inplace=True),
-                nn.Dropout(dropout_rate),
-                nn.Linear(1024, 512),
-                nn.ReLU(inplace=True),
-                nn.Dropout(dropout_rate),
-                nn.Linear(512, num_classes)
-            )
+            self.classifier = nn.Linear(input_dim, num_classes)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -274,8 +261,6 @@ class MultiLabelClassifier(nn.Module):
         Returns:
             Classification logits [batch_size, num_classes]
         """
-        x = self.dropout(x)
-        
         if self.use_grouped_fc:
             logits = x.new_zeros(x.size(0), self.num_classes)
             for classifier, index_name in zip(self.group_classifiers, self._group_index_names):
@@ -411,21 +396,11 @@ class MultiScaleContextAwareNetwork(nn.Module):
             for rows, cols in config.network.scales[1:]
         ]).to(self.device)
         
-        self.multi_scale_fusion = nn.Sequential(
-            nn.Linear(config.network.final_feature_dim, config.network.final_feature_dim // 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(config.network.classifier_dropout),
-            nn.Linear(config.network.final_feature_dim // 2, config.network.final_feature_dim // 4),
-            nn.ReLU(inplace=True),
-            nn.Dropout(config.network.classifier_dropout)
-        ).to(self.device)
-        
         self.classifier = MultiLabelClassifier(
-            input_dim=config.network.final_feature_dim // 4,
+            input_dim=config.network.final_feature_dim,
             num_classes=num_classes,
             use_grouped_fc=config.network.use_grouped_fc,
             num_groups=config.network.num_groups,
-            dropout_rate=config.network.classifier_dropout,
             class_groups=class_groups,
             group_weights=group_weights,
         ).to(self.device)
@@ -522,8 +497,6 @@ class MultiScaleContextAwareNetwork(nn.Module):
             coarse_context_processors=self.coarse_scale_context,
             global_features=global_features,
         )
-        
-        fused_features = self.multi_scale_fusion(fused_features)
         
         logits = self.classifier(fused_features)
         

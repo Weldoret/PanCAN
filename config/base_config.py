@@ -76,7 +76,6 @@ class NetworkConfig(ConfigMixin):
     sliding_window_stride: int | tuple[int, int] = 2
     kernel_feature_dims: list[int] | None = None
     final_feature_dim: int | None = None
-    classifier_dropout: float = 0.5
     use_grouped_fc: bool = True
     num_groups: int = 5
 

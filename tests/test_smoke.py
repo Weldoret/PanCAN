@@ -104,6 +104,14 @@ class EndToEndSmokeTest(unittest.TestCase):
         model.coarse_scale_context[0].register_forward_pre_hook(
             lambda _module, inputs: coarse_context_inputs.append(inputs[0].shape)
         )
+        scale_outputs = []
+        classifier_inputs = []
+        model.multi_scale_aggregator.register_forward_hook(
+            lambda _module, _inputs, output: scale_outputs.append(output.detach())
+        )
+        model.classifier.register_forward_pre_hook(
+            lambda _module, inputs: classifier_inputs.append(inputs[0].detach())
+        )
 
         with torch.no_grad():
             model.context_network.neighborhood_residuals[-1, 0, 0, 3] = 0.5
@@ -116,6 +124,8 @@ class EndToEndSmokeTest(unittest.TestCase):
         self.assertFalse(hasattr(model, "deep_kernel_network"))
         self.assertEqual(scale_inputs, [torch.Size((2, 4, 8))])
         self.assertEqual(coarse_context_inputs, [torch.Size((2, 1, 8))])
+        self.assertTrue(torch.equal(scale_outputs[0], classifier_inputs[0]))
+        self.assertFalse(hasattr(model, "multi_scale_fusion"))
 
 
 if __name__ == "__main__":
