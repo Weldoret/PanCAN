@@ -423,7 +423,11 @@ class MultiScaleContextAwareNetwork(nn.Module):
                 feature_dim=self.feature_dim * 2,
                 config=config.network,
                 directions=directions,
-                max_order=config.network.coarse_max_order,
+                max_order=(
+                    config.network.coarse_max_order
+                    if (rows, cols) in {(2, 3), (1, 2)}
+                    else config.network.max_order
+                ),
             )
             for rows, cols in config.network.scales[1:]
         ]).to(self.device)

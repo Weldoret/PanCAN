@@ -72,6 +72,8 @@ class AdjacencyMatrixGenerator:
             cols: Number of grid columns
             directions: List of directions
         """
+        if rows < 1 or cols < 1:
+            raise ValueError("grid dimensions must be positive")
         self.rows = rows
         self.cols = cols
         self.num_nodes = rows * cols
@@ -81,7 +83,9 @@ class AdjacencyMatrixGenerator:
             self.directions = directional.directions
             self.num_directions = directional.num_directions
         else:
-            self.directions = directions
+            if not directions:
+                raise ValueError("directions must not be empty")
+            self.directions = list(directions)
             self.num_directions = len(directions)
     
     def generate_adjacency_matrices(self) -> List[torch.Tensor]:
@@ -131,7 +135,7 @@ class AdjacencyMatrixGenerator:
         
         return index_matrix
     
-    def generate_weight_matrix(self, normalization: str = 'average') -> torch.Tensor:
+    def generate_weight_matrix(self, normalization: str = 'none') -> torch.Tensor:
         index_matrix = self.generate_adjacency_index_tensor()
         weight_matrix = torch.zeros(self.num_nodes, self.num_directions, dtype=torch.float32)
         
@@ -157,12 +161,12 @@ class AdjacencyMatrixGenerator:
 def generate_adjacency_index_matrix(rows: int, cols: int, directions: Optional[List[Tuple[int, int]]] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     generator = AdjacencyMatrixGenerator(rows, cols, directions)
     index_matrix = generator.generate_adjacency_index_tensor()
-    weights_flag = generator.generate_weight_matrix(normalization='average')
+    weights_flag = generator.generate_weight_matrix()
     
     return index_matrix, weights_flag
 
 
-def generate_weight_matrix(rows: int, cols: int, normalization: str = 'average') -> torch.Tensor:
+def generate_weight_matrix(rows: int, cols: int, normalization: str = 'none') -> torch.Tensor:
     generator = AdjacencyMatrixGenerator(rows, cols)
     return generator.generate_weight_matrix(normalization)
 
@@ -182,11 +186,12 @@ class NeighborhoodSystem(nn.Module):
             name = f"adjacency_matrix_{direction_idx}"
             self.register_buffer(name, matrix)
             self._adjacency_buffer_names.append(name)
-        self.index_matrix = generator.generate_adjacency_index_tensor()
-        self.weight_matrix = generator.generate_weight_matrix(normalization='average')
-        
-        self.register_buffer('adjacency_index', self.index_matrix)
-        self.register_buffer('adjacency_weight', self.weight_matrix)
+        self.register_buffer(
+            'adjacency_index', generator.generate_adjacency_index_tensor()
+        )
+        self.register_buffer(
+            'adjacency_weight', generator.generate_weight_matrix()
+        )
         
         self.directions = generator.directions
         self.num_directions = generator.num_directions
@@ -206,8 +211,11 @@ class NeighborhoodSystem(nn.Module):
         Returns:
             Neighborhood aggregated features
         """
-        batch_size, num_nodes, feature_dim = features.shape
-        assert num_nodes == self.num_nodes, f"Number of feature nodes {num_nodes} doesn't match neighborhood system nodes {self.num_nodes}"
+        if features.dim() != 3 or features.size(1) != self.num_nodes:
+            raise ValueError(
+                f"features must have shape [batch, {self.num_nodes}, feature_dim]"
+            )
+        _, num_nodes, _ = features.shape
         
         aggregated_features = torch.zeros_like(features)
         
@@ -241,6 +249,7 @@ class NeighborhoodSystem(nn.Module):
         Returns:
             List of neighbor indices
         """
+        self._validate_node(node_idx)
         neighbor_indices = self.adjacency_index[node_idx]
         
         valid_mask = neighbor_indices != -1
@@ -261,7 +270,7 @@ class NeighborhoodSystem(nn.Module):
         Returns:
             Adjacency matrix
         """
-        if direction_idx < len(self.adjacency_matrices):
+        if 0 <= direction_idx < len(self.adjacency_matrices):
             return self.adjacency_matrices[direction_idx]
         else:
             raise ValueError(f"Direction index out of range: {direction_idx}")
@@ -285,6 +294,31 @@ class NeighborhoodSystem(nn.Module):
         
         return grid
     
+    def get_directional_neighbors(
+            self, node_idx: int, direction_idx: int, order: int = 1) -> List[int]:
+        """Return the exact N_c^(order)(x) defined by paper Eq. (5)."""
+        self._validate_node(node_idx)
+        if not 0 <= direction_idx < self.num_directions:
+            raise ValueError("direction index out of range")
+        if order < 1:
+            raise ValueError("order must be positive")
+
+        if order == 1:
+            neighbor = int(self.adjacency_index[node_idx, direction_idx])
+            return [] if neighbor < 0 else [neighbor]
+
+        previous = self.get_directional_neighbors(
+            node_idx, direction_idx, order - 1
+        )
+        neighbors = set()
+        for neighbor in previous:
+            if neighbor != node_idx:
+                neighbors.update(self.get_directional_neighbors(
+                    neighbor, direction_idx, order - 1
+                ))
+        neighbors.discard(node_idx)
+        return sorted(neighbors)
+
     def get_higher_order_neighbors(self, node_idx: int, order: int) -> List[int]:
         """
         Get higher-order neighbors
@@ -296,17 +330,16 @@ class NeighborhoodSystem(nn.Module):
         Returns:
             List of higher-order neighbor indices
         """
-        if order == 1:
-            return self.get_neighbors(node_idx)
-        
-        neighbors = set(self.get_neighbors(node_idx))
-        
-        for _ in range(order - 1):
-            new_neighbors = set()
-            for neighbor in neighbors:
-                new_neighbors.update(self.get_neighbors(neighbor))
-            neighbors.update(new_neighbors)
-        
-        neighbors.discard(node_idx)
-        
-        return list(neighbors)
+        if order < 1:
+            raise ValueError("order must be positive")
+        return sorted({
+            neighbor
+            for direction_idx in range(self.num_directions)
+            for neighbor in self.get_directional_neighbors(
+                node_idx, direction_idx, order
+            )
+        })
+
+    def _validate_node(self, node_idx: int) -> None:
+        if not 0 <= node_idx < self.num_nodes:
+            raise ValueError("node index out of range")

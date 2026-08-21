@@ -6,14 +6,14 @@ from models.multi_scale import MultiScaleFeatureAggregator
 
 
 class CrossScaleGroupingTest(unittest.TestCase):
-    def test_paper_hierarchy_uses_overlapping_groups_with_full_coverage(self):
+    def test_paper_hierarchy_starts_with_two_by_two_groups(self):
         groups = MultiScaleFeatureAggregator._build_groups(
             8, 10, 4, 5, stride=(2, 2)
         )
 
         self.assertEqual(len(groups), 20)
-        self.assertTrue(all(len(group) == 9 for group in groups))
-        self.assertTrue(set(groups[0]).intersection(groups[1]))
+        self.assertTrue(all(len(group) == 4 for group in groups))
+        self.assertFalse(set(groups[0]).intersection(groups[1]))
         self.assertEqual(
             set().union(*map(set, groups)), set(range(8 * 10))
         )
@@ -40,15 +40,12 @@ class CrossScaleGroupingTest(unittest.TestCase):
                 set(range(source_rows * source_cols)),
             )
 
-    def test_stride_changes_the_micro_cell_windows(self):
-        stride_two = MultiScaleFeatureAggregator._build_groups(
-            8, 10, 4, 5, stride=2
+    def test_non_divisible_paper_transition_overlaps_for_full_coverage(self):
+        groups = MultiScaleFeatureAggregator._build_groups(
+            4, 5, 2, 3, stride=2
         )
-        stride_three = MultiScaleFeatureAggregator._build_groups(
-            8, 10, 4, 5, stride=3
-        )
-
-        self.assertNotEqual(stride_two[0], stride_three[0])
+        self.assertTrue(all(len(group) == 4 for group in groups))
+        self.assertTrue(set(groups[1]).intersection(groups[2]))
 
     def test_anchor_stays_inside_its_macro_cell(self):
         groups = MultiScaleFeatureAggregator._build_groups(

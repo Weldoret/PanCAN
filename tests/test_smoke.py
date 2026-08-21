@@ -49,7 +49,29 @@ class EndToEndSmokeTest(unittest.TestCase):
         self.assertEqual(model.random_walk.max_order, 2)
         self.assertEqual(
             [block.random_walk.max_order for block in model.coarse_scale_context],
-            [1, 1, 1],
+            [1, 1, 2],
+        )
+
+    def test_eight_by_ten_keeps_second_order_at_four_by_five(self):
+        config = PanCAN.NetworkConfig(
+            backbone_name="resnet34",
+            backbone_feature_dim=4,
+            grid_rows=8,
+            grid_cols=10,
+            num_classes=3,
+            max_order=2,
+            coarse_max_order=1,
+            attention_heads=1,
+            kernel_feature_dims=[8],
+            final_feature_dim=8,
+        )
+        model = PanCAN.MultiScaleContextAwareNetwork(
+            backbone=TinyBackbone(), num_classes=3, config=config,
+            device=torch.device("cpu"),
+        )
+        self.assertEqual(
+            [block.random_walk.max_order for block in model.coarse_scale_context],
+            [2, 1, 1, 2],
         )
 
     def test_package_import_and_tiny_forward(self):

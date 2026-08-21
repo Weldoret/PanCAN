@@ -362,15 +362,7 @@ class MultiScaleFeatureAggregator(nn.Module):
         target_cols: int,
         stride: int | Tuple[int, int] = 2,
     ) -> List[List[int]]:
-        """Build stride-aware overlapping groups for one scale transition.
-
-        PanCAN defines the coarser grid by overlap strides and reports a 2x2
-        scale interval. The paper does not spell out boundary padding or an
-        exact window size, so this uses the smallest window that both starts
-        from the configured stride and guarantees overlap plus full coverage.
-        The requested target grid remains authoritative for non-divisible
-        transitions such as 5 -> 3.
-        """
+        """Build the paper's 2x2 micro-cell groups for one scale transition."""
         if (
             current_rows < 1
             or current_cols < 1
@@ -420,12 +412,13 @@ class MultiScaleFeatureAggregator(nn.Module):
         if count < 1 or count > length:
             raise ValueError("target grid must fit inside source grid")
 
-        # ponytail: infer only the missing window size; keep the paper's
-        # reported target hierarchy and use the smallest overlapping window.
+        # The reported hierarchy uses a 2x2 scale interval. Non-divisible
+        # transitions (5 -> 3 and 3 -> 2) overlap at their boundary so that the
+        # requested coarse grid also covers every micro-cell.
         minimum_overlap_window = (length + count - 1) // count
         window = min(
             length - count + 1,
-            max(stride + 1, minimum_overlap_window),
+            max(stride, minimum_overlap_window),
         )
         if count == 1:
             return [0], window
